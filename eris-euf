@@ -4,6 +4,8 @@ from flask import Flask, json
 import sys
 from os import listdir
 from os.path import join, dirname, abspath, isdir
+from threading import Thread
+
 
 def add_third_party_dir(f):
     base_path = dirname(abspath(f))
@@ -28,10 +30,20 @@ def configurations():
 def services(ecl, autoadapt):
     pass
 
+class FlaskThread(Thread):
+    def run(self):
+        app.run(debug=False)
 
-# Main function
+
+# Main
 def main():
-    app.run(debug=False)
+    flask_thread = FlaskThread()
+    flask_thread.start()
+
+    print("Please press a key!")
+    f = input()
+
+    flask_thread.join()
 
 if __name__ == "__main__":
     main()
