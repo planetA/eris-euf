@@ -6,6 +6,8 @@ import sys
 from os import listdir
 from os.path import join, dirname, abspath, isdir
 from threading import Thread
+from argparse import ArgumentParser
+import time
 
 
 def add_third_party_dir(f):
@@ -17,7 +19,11 @@ def add_third_party_dir(f):
             sys.path.append(join(tp_dir, e))
 
 add_third_party_dir(__file__)
-import eris
+from eris import ErisCtrl, ErisCtrlError
+
+
+# The global switch whether we manage ERIS or not
+euf_on = True
 
 
 # All the REST API stuff
@@ -62,14 +68,49 @@ class FlaskThread(Thread):
         self._server.shutdown()
 
 
+# All the EUF related methods
+def euf_loop(ectrl):
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+
+
 # Main
 def main():
+    # Parse the command line arguments
+    arguments = ArgumentParser(description="EUF manager for ERIS")
+    arguments.add_argument("--url", help="The url where the ERIS server can be reached (default=localhost)",
+            type=str, dest="url", default="localhost")
+    arguments.add_argument("--port", help="The port at which the ERIS server can be reached (default=5189)",
+            type=int, dest="port", default=5189)
+    arguments.add_argument("--user", help="The user that should be used to connect to ERIS (default=euf)",
+            type=str, dest="user", default="euf")
+    arguments.add_argument("--passwd", help="The password that should be used to connect to ERIS (default=euf)",
+            type=str, dest="passwd", default="euf")
+
+    parsed_args = arguments.parse_args()
+
+    # Connect to ERIS
+    ectrl = ErisCtrl(parsed_args.url, parsed_args.port, parsed_args.user, parsed_args.passwd)
+    try:
+        ectrl._login()
+    except ErisCtrlError:
+        print("Failed to connect to ERIS!")
+        sys.exit(1)
+
+    # Prepare ERIS
+    ectrl.energy_management(False, False)       # Turn of ERIS' energy control loop (we are doing this now!)
+    for w in ectrl.workers():                   # Turn on all ERIS workers
+        w.enable()
+
     # Start the flask thread
     flask_thread = FlaskThread(app)
     flask_thread.start()
 
-    print("Please press a key!")
-    f = input()
+    # Enter the EUF main loop
+    euf_loop(ectrl)
 
     # Shutdown everything
     flask_thread.shutdown()
