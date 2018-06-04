@@ -1,3 +1,6 @@
 [submodule "third_party/eris-ctrl"]
 	path = third_party/eris-ctrl
 	url = https://github.com/l3nkz/eris-ctrl.git
+[submodule "third_party/pareto"]
+	path = third_party/pareto
+	url = https://github.com/mhaehnel/pareto.git
