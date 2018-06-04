@@ -20,6 +20,9 @@ def add_third_party_dir(f):
 
 add_third_party_dir(__file__)
 from eris import ErisCtrl, ErisCtrlError
+from eris_model import Eris
+from hardware_model import Hardware
+from pareto import paretoOptimize
 
 
 # The global switch whether we manage ERIS or not
@@ -68,11 +71,38 @@ class FlaskThread(Thread):
         self._server.shutdown()
 
 
+def runningBenchmark():
+    return "tatp"
+
 # All the EUF related methods
 def euf_loop(ectrl):
+    currentBenchmark = None
+    data = []
     try:
         while True:
             time.sleep(1)
+            bench = runningBenchmark()
+            if bench != currentBenchmark:
+                print("Creating profile for:",bench)
+                rawData = []
+                for freq in Hardware.config['freq']:
+                    for cores in Hardware.config['cores']:
+                        for ht in Hardware.config['ht']:
+                            cpus = (ht+1)*cores
+                            params = Eris(cpus).benchmarks(bench)
+                            ipc = Hardware.IPC(ht=ht,
+                                    memory_heaviness=params["memory_heaviness"](),avx_heaviness=params["avx_heaviness"](),
+                                    compute_heaviness=params["compute_heaviness"](),cache_heaviness=params["cache_heaviness"](),cpus=cpus,freq=freq)
+                            p_pkg = Hardware.P_PKG(memory_heaviness=params["memory_heaviness"](),
+                                    IPC=ipc,freq=freq,avx_heaviness=params["avx_heaviness"](),compute_heaviness=params["compute_heaviness"](),cpus=cpus)
+                            tps = (freq*1000)/(params["ipt"]()/ipc)
+                            rawData.append({"freq": freq,"cpus":cpus, "ht":ht, "cores":cores,"ipc":ipc,"p_pkg": p_pkg,"tps": tps})
+                data = paretoOptimize(rawData,['<p_pkg','>tps'])
+                #Debug output!
+                print(','.join(data[0].keys()))
+                for r in data:
+                    print(','.join(str(x) for x in r.values()))
+                currentBenchmark = bench
     except KeyboardInterrupt:
         pass
 
