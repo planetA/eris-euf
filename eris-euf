@@ -5,9 +5,10 @@ from werkzeug.serving import make_server
 import sys
 from os import listdir
 from os.path import join, dirname, abspath, isdir
-from threading import Thread
+from threading import Thread, Lock
 from argparse import ArgumentParser
 import time
+from collections import namedtuple
 
 
 def add_third_party_dir(f):
@@ -107,40 +108,219 @@ class FlaskThread(Thread):
         self._server.shutdown()
 
 
-def runningBenchmark():
-    return "tatp"
+class EUFThread(Thread):
+    Config = namedtuple("Config", ["freq", "cores", "ht", "cpus", "ipc", "p_pkg", "tps"])
 
-# All the EUF related methods
-def euf_loop(ectrl):
-    currentBenchmark = None
-    data = []
-    try:
-        while True:
-            time.sleep(1)
-            bench = runningBenchmark()
-            if bench != currentBenchmark:
-                print("Creating profile for:",bench)
-                rawData = []
-                for freq in Hardware.config['freq']:
-                    for cores in Hardware.config['cores']:
-                        for ht in Hardware.config['ht']:
-                            cpus = (ht+1)*cores
-                            params = Eris(cpus).benchmarks(bench)
-                            ipc = Hardware.IPC(ht=ht,
-                                    memory_heaviness=params["memory_heaviness"](),avx_heaviness=params["avx_heaviness"](),
-                                    compute_heaviness=params["compute_heaviness"](),cache_heaviness=params["cache_heaviness"](),cpus=cpus,freq=freq)
-                            p_pkg = Hardware.P_PKG(memory_heaviness=params["memory_heaviness"](),
-                                    IPC=ipc,freq=freq,avx_heaviness=params["avx_heaviness"](),compute_heaviness=params["compute_heaviness"](),cpus=cpus)
-                            tps = (freq*1000)/(params["ipt"]()/ipc)
-                            rawData.append({"freq": freq,"cpus":cpus, "ht":ht, "cores":cores,"ipc":ipc,"p_pkg": p_pkg,"tps": tps})
-                data = paretoOptimize(rawData,['<p_pkg','>tps'])
-                #Debug output!
-                print(','.join(data[0].keys()))
-                for r in data:
-                    print(','.join(str(x) for x in r.values()))
-                currentBenchmark = bench
-    except KeyboardInterrupt:
-        pass
+    def __init__(self, ectrl):
+        super().__init__()
+
+        self._ectrl = ectrl
+        self._lock = Lock()
+        self.eufon = True
+
+        # Register the counters
+        self.counters = {}
+        for ctr in ectrl.counters():
+            if ctr.dist_name == "Tasks.Started":
+                self.counters["started"] = ctr.monitor()
+            elif ctr.dist_name == "Tasks.Finished":
+                self.counters["finished"] = ctr.monitor()
+            elif ctr.dist_name == "Tasks.Latency Average":
+                self.counters["latency"] = ctr.monitor()
+
+        # Get all the workers
+        self.workers = ectrl.workers()
+
+        # Get the demo session
+        self.session = ectrl.session("demo-sigmod")
+
+        print("Available benchmarks:")
+        for n, b in self.session.benchmarks.items():
+            print("{}: {}".format(n, b.name))
+
+        print("Available profiles:")
+        for n, p in self.session.profiles.items():
+            print("{}: {}".format(n, p.name))
+
+        # Internal management data
+        self._changed = True
+        self._current_bench = None
+
+        self._configurations = None
+        self._active_configuration = None
+
+    # Other support functions
+    def get_configurations(self):
+        with self._lock:
+            return self._configurations
+
+    def get_active_configuration(self):
+        with self._lock:
+            return self._active_configuration
+
+    def set_benchmark(self, bench_id):
+        with self._lock:
+            success = self.session._activate_benchmark(bench_id)
+            self.session._update()
+            self._changed = True
+
+            return success
+
+    def set_profile(self, profile_id):
+        with self._lock:
+            success = self.session._activate_profile(profile_id)
+            self.session._update()
+            self._changed = True
+
+            return success
+
+    def euf_on(self):
+        with self._lock:
+            self.eufon = True
+            self._changed = True
+
+    def euf_off(self):
+        with self._lock:
+            self.eufon = False
+            self._changed = True
+
+    def euf(self):
+        with self._lock:
+            return self.eufon
+
+    # EUF related functions
+    def _current_bench(self, refresh=True):
+        if refresh:
+            self.session._update()
+
+        for b in self.session.benchmarks:
+            if b.active(False):
+                return b.name
+
+        return None
+
+    def _current_profile(self, refresh=True):
+        if refresh:
+            self.session._update()
+
+        for p in self.session.profiles:
+            if p.active(False):
+                return p.name
+
+        return None
+
+    def _update_configurations(self):
+        print("Updating configurations")
+
+        self._configurations = []
+        if not self.eufon:
+            freq = max(Hardware.config["freq"])
+            cores = max(Hardware.config["cores"])
+
+            self._configurations.append(EUFThread.Config(freq=freq,
+                                                         cores=cores,
+                                                         ht=True,
+                                                         cpus=2*cores,
+                                                         ipc=0, p_pkg=0, tps=0))
+            return
+        elif self._current_bench(False) is None:
+            freq = min(Hardware.config["freq"])
+            cores = min(Hardware.config["cores"])
+
+            self._configurations.append(EUFThread.Config(freq=freq,
+                                                         cores=cores,
+                                                         ht=False,
+                                                         cpus=cores,
+                                                         ipc=0, p_pkg=0, tps=0))
+            return
+        else:
+            b = self._current_bench(False)
+            print("Building configuration for {}".format(b.name))
+
+            # Generate all possible configurations based on the models
+            all_configurations = []
+            for freq in Hardware.config['freq']:
+                for cores in Hardware.config['cores']:
+                    for ht in Hardware.config['ht']:
+                        cpus = (ht+1)*cores
+                        params = Eris(cpus).benchmarks(b.name)
+                        ipc = Hardware.IPC(ht=ht,
+                                memory_heaviness=params["memory_heaviness"](),avx_heaviness=params["avx_heaviness"](),
+                                compute_heaviness=params["compute_heaviness"](),cache_heaviness=params["cache_heaviness"](),cpus=cpus,freq=freq)
+                        p_pkg = Hardware.P_PKG(memory_heaviness=params["memory_heaviness"](),
+                                IPC=ipc,freq=freq,avx_heaviness=params["avx_heaviness"](),compute_heaviness=params["compute_heaviness"](),cpus=cpus)
+                        tps = (freq*1000)/(params["ipt"]()/ipc)
+
+                        all_configurations.append(EUFThread.Config(freq=freq, cores=cores, ht=True if ht == 1 else False,
+                                                                   cpus = cpus, ipc=ipc, p_pkg=p_pkg, tps=tps))
+
+            # Reduce the number of configurations to the pareto optimal ones
+            self._configurations = paretoOptimize(all_configurations, ["<p_pkg", ">tps"])
+
+    def _find_best_configuration(self, target_tps):
+        # TODO: Actually find the best configuration for the current situation
+        return self._configurations[0]
+
+    def _apply_configuration(self, config):
+        if self._active_configuration == config:
+            return
+
+        workers = []
+        for i in range(config.cores):
+            workers.append(i)
+        if config.ht:
+            for i in range(config.cores):
+                workers.append(i + 2) #max(Hardware.config['cores']))
+
+        frequency = config.freq
+
+        print("Applying configuration: {} @{}MHz".format(",".join([str(w) for w in workers]), frequency/1000))
+
+        for w in self.workers:
+            w.frequency(frequency)
+            if w.localid in workers:
+                w.enable()
+            else:
+                w.disable()
+
+        self._active_configuration = config
+
+    # Our main loop
+    def run(self):
+        try:
+            while True:
+                # Output the latest counter values
+                self._ectrl._pull_monitoring_data()
+                ctr_values = []
+                for name, ctr in self.counters.items():
+                    if len(ctr.values(False)) > 0:
+                        ctr_values.append((name, ctr.values(False)[-1].value))
+
+                print(" ".join(["{}: {}".format(n, v) for n, v in ctr_values]))
+
+                with self._lock:
+                    if self._changed:
+                        # The system configuration changed … update our configurations accordingly
+                        self._update_configurations()
+
+                        best = self._find_best_configuration(None)
+                        self._apply_configuration(best)
+                        self._changed = False
+                    else:
+                        # Check if we are able to achieve the target transactions/second
+                        started = self.counters["started"].values(False)[-1].value
+                        finished = self.counters["finished"].values(False)[-1].value
+
+                        if abs(started - finished) > (started) * 0.05:
+                            best = self._find_best_configuration(started)
+                            self._apply_configuration(best)
+
+                # Wait for another update of the data
+                time.sleep(1)
+
+        except KeyboardInterrupt:
+            # Someone interrupted us - we are done now :)
+            pass
 
 
 # Main
@@ -171,12 +351,15 @@ def main():
     for w in ectrl.workers():                   # Turn on all ERIS workers
         w.enable()
 
-    # Start the flask thread
-    flask_thread = FlaskThread(app)
+    # Start the EUF and flask threads
+    euf_thread = EUFThread(ectrl)
+    flask_thread = FlaskThread(app, euf_thread)
+
+    euf_thread.start()
     flask_thread.start()
 
-    # Enter the EUF main loop
-    euf_loop(ectrl)
+    # Wait for the EUF thread to join
+    euf_thread.join()
 
     # Shutdown everything
     flask_thread.shutdown()
