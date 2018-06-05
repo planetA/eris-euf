@@ -109,7 +109,7 @@ class FlaskThread(Thread):
 
 
 class EUFThread(Thread):
-    Config = namedtuple("Config", ["freq", "cores", "ht", "cpus", "ipc", "p_pkg", "tps"])
+    Config = namedtuple("Config", ["freq", "cores", "ht", "cpus", "ipc", "power", "tps", "epr"])
 
     def __init__(self, ectrl):
         super().__init__()
@@ -144,7 +144,8 @@ class EUFThread(Thread):
 
         # Internal management data
         self._changed = True
-        self._current_bench = None
+        self._bench_changed = False
+        self._last_benchmark = None
 
         self._configurations = None
         self._active_configuration = None
@@ -161,16 +162,16 @@ class EUFThread(Thread):
     def set_benchmark(self, bench_id):
         with self._lock:
             success = self.session._activate_benchmark(bench_id)
-            self.session._update()
             self._changed = True
+            self._bench_changed = True
 
             return success
 
     def set_profile(self, profile_id):
         with self._lock:
             success = self.session._activate_profile(profile_id)
-            self.session._update()
             self._changed = True
+            self._bench_changed = True
 
             return success
 
@@ -193,9 +194,9 @@ class EUFThread(Thread):
         if refresh:
             self.session._update()
 
-        for b in self.session.benchmarks:
+        for _, b in self.session.benchmarks.items():
             if b.active(False):
-                return b.name
+                return b
 
         return None
 
@@ -210,10 +211,10 @@ class EUFThread(Thread):
         return None
 
     def _update_configurations(self):
-        print("Updating configurations")
-
         self._configurations = []
         if not self.eufon:
+            print("EUF disabled - using max performance configuration")
+
             freq = max(Hardware.config["freq"])
             cores = max(Hardware.config["cores"])
 
@@ -221,45 +222,87 @@ class EUFThread(Thread):
                                                          cores=cores,
                                                          ht=True,
                                                          cpus=2*cores,
-                                                         ipc=0, p_pkg=0, tps=0))
-            return
-        elif self._current_bench(False) is None:
-            freq = min(Hardware.config["freq"])
-            cores = min(Hardware.config["cores"])
-
-            self._configurations.append(EUFThread.Config(freq=freq,
-                                                         cores=cores,
-                                                         ht=False,
-                                                         cpus=cores,
-                                                         ipc=0, p_pkg=0, tps=0))
+                                                         ipc=0, power=0, tps=0, epr=-1))
             return
         else:
-            b = self._current_bench(False)
-            print("Building configuration for {}".format(b.name))
+            b = self._current_bench()
+            if b is None:
+                print("No benchmark running - using low energy configuration")
 
-            # Generate all possible configurations based on the models
-            all_configurations = []
-            for freq in Hardware.config['freq']:
-                for cores in Hardware.config['cores']:
-                    for ht in Hardware.config['ht']:
-                        cpus = (ht+1)*cores
-                        params = Eris(cpus).benchmarks(b.name)
-                        ipc = Hardware.IPC(ht=ht,
-                                memory_heaviness=params["memory_heaviness"](),avx_heaviness=params["avx_heaviness"](),
-                                compute_heaviness=params["compute_heaviness"](),cache_heaviness=params["cache_heaviness"](),cpus=cpus,freq=freq)
-                        p_pkg = Hardware.P_PKG(memory_heaviness=params["memory_heaviness"](),
-                                IPC=ipc,freq=freq,avx_heaviness=params["avx_heaviness"](),compute_heaviness=params["compute_heaviness"](),cpus=cpus)
-                        tps = (freq*1000)/(params["ipt"]()/ipc)
+                freq = min(Hardware.config["freq"])
+                cores = min(Hardware.config["cores"])
 
-                        all_configurations.append(EUFThread.Config(freq=freq, cores=cores, ht=True if ht == 1 else False,
-                                                                   cpus = cpus, ipc=ipc, p_pkg=p_pkg, tps=tps))
+                self._configurations.append(EUFThread.Config(freq=freq,
+                                                             cores=cores,
+                                                             ht=False,
+                                                             cpus=cores,
+                                                             ipc=0, power=0, tps=0, epr=0))
+            elif b.id == self._last_benchmark:
+                print("Same benchmark running - use same configurations")
+                self._bench_changed = False
+                return
+            else:
+                print("Generating configurations for {}".format(b.name))
 
-            # Reduce the number of configurations to the pareto optimal ones
-            self._configurations = paretoOptimize(all_configurations, ["<p_pkg", ">tps"])
+                # Generate all possible configurations based on the models
+                all_configurations = []
+                for freq in Hardware.config['freq']:
+                    for cores in Hardware.config['cores']:
+                        for ht in Hardware.config['ht']:
+                            cpus = (ht+1)*cores
+                            params = Eris(cpus, ht).benchmarks(b.name)
+                            ipc = Hardware.IPC(
+                                    memory_heaviness=params["memory_heaviness"](),avx_heaviness=params["avx_heaviness"](), branch_heaviness=params["branch_heaviness"](),
+                                    compute_heaviness=params["compute_heaviness"](),cache_heaviness=params["cache_heaviness"](),
+                                    cpus=cpus,freq=freq,ht=ht)
+                            p_pkg = Hardware.P_PKG(
+                                    memory_heaviness=params["memory_heaviness"](),avx_heaviness=params["avx_heaviness"](),compute_heaviness=params["compute_heaviness"](),
+                                    IPC=ipc,freq=freq,cpus=cpus,ht=ht)
+                            p_core = Hardware.P_Cores(
+                                    nomemory_heaviness=params["nomemory_heaviness"](),avx_heaviness=params["avx_heaviness"](),compute_heaviness=params["compute_heaviness"](),
+                                    IPC=ipc,freq=freq,cpus=cpus,ht=ht)
+                            p_ram = Hardware.P_Ram(memory_heaviness=params["memory_heaviness"](),
+                                    IPC=ipc,freq=freq,cpus=cpus,ht=ht)
+                            tps = (freq*1000)/(params["ipt"]()/ipc)
+
+                            power = p_pkg + p_ram
+                            epr = power/tps
+
+                            all_configurations.append(EUFThread.Config(freq=freq, cores=cores, ht=True if ht == 1 else False,
+                                                                       cpus=cpus, ipc=ipc, power=power, tps=tps, epr=epr))
+
+                # Reduce the number of configurations to the pareto optimal ones
+                self._configurations = [EUFThread.Config(**pc) for pc in paretoOptimize([c._asdict() for c in all_configurations], ["<power", ">tps"])]
+                print("Generated {} possible configurations:".format(len(self._configurations)))
+                for c in self._configurations:
+                    print(str(c))
+
+                self._bench_changed = False
+
+            self._last_benchmark = b.id if b is not None else None
 
     def _find_best_configuration(self, target_tps):
-        # TODO: Actually find the best configuration for the current situation
-        return self._configurations[0]
+        if len(self._configurations) == 1:
+            return self._configurations[0]
+
+        best = None
+        for c in self._configurations:
+            if target_tps is None:
+                if best is None or c.epr < best.epr:
+                    best = c
+            else:
+                if best is None:
+                    best = c
+                elif c.tps >= target_tps:
+                    if c.epr < best.epr:
+                        best = c
+                elif c.tps >= best.tps:
+                    best = c
+
+        if best is None:
+            print("Couldn't find a configuration")
+
+        return best
 
     def _apply_configuration(self, config):
         if self._active_configuration == config:
@@ -306,12 +349,20 @@ class EUFThread(Thread):
                         best = self._find_best_configuration(None)
                         self._apply_configuration(best)
                         self._changed = False
-                    else:
+                    elif self._bench_changed:
+                        while self._current_bench() is None:
+                            time.sleep(.1)
+
+                        self._update_configurations()
+
+                        best = self._find_best_configuration(None)
+                        self._apply_configuration(best)
+                    elif len(self.counters["started"].values(False)) > 0:
                         # Check if we are able to achieve the target transactions/second
                         started = self.counters["started"].values(False)[-1].value
                         finished = self.counters["finished"].values(False)[-1].value
 
-                        if abs(started - finished) > (started) * 0.05:
+                        if abs(started - finished) > (started * 0.05):
                             best = self._find_best_configuration(started)
                             self._apply_configuration(best)
 
