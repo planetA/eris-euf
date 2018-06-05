@@ -20,10 +20,14 @@ def add_third_party_dir(f):
 
 add_third_party_dir(__file__)
 from eris import ErisCtrl, ErisCtrlError
-from eris_model import Eris
-from hardware_model import Hardware
 from pareto import paretoOptimize
 
+try:
+    from eris_model import Eris
+    from hardware_model import Hardware
+except ImportError:
+    print("Model files are missing. Abort", file=sys.stderr)
+#    sys.exit(1)
 
 # The global switch whether we manage ERIS or not
 euf_on = True
