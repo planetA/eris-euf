@@ -29,8 +29,6 @@ except ImportError:
     print("Model files are missing. Abort", file=sys.stderr)
 #    sys.exit(1)
 
-# The global switch whether we manage ERIS or not
-euf_on = True
 
 
 # All the REST API stuff
@@ -42,25 +40,53 @@ def index():
 
 @app.route("/configurations", methods=["GET"])
 def configurations():
+    global euf_mgr
+
     return "TBD"
 
 @app.route("/servicestatus", methods=["GET"])
 def service_status():
+    global euf_mgr
+
+    euf_on = euf_mgr.euf()
     return jsonify({"adaptOn" : False, "eclOn" : euf_on})
 
-@app.route("/services/<stype>/<int:status>", methods=["POST"])
+@app.route("/services/<stype>/<status>", methods=["POST"])
 def services(stype, status):
+    global euf_mgr
+
     if stype == "adapton":
         pass
     elif stype == "eclon":
-        euf_on = True if status == 1 else False
+        if int(status) == 1:
+            euf_mgr.euf_on()
+        else:
+            euf_mgr.euf_off()
     else:
-        return 404
+        return '',400
 
-    return 200
+    return '',200
+
+@app.route("/benchmark/sessions")
+def sessions():
+    return jsonify({"managedBenchmarks" : [ { "name" : "sigmod-demo" } ]})
+
+@app.route("/benchmark/setbenchmark/<session>/<bench>", methods=["POST"])
+def set_benchmark(session, bench):
+    global euf_mgr
+
+    success = euf_mgr.set_benchmark(bench)
+
+    return '', 200 if success else 400
+
+@app.route("/benchmark/setprofile/<session>/<profile>", methods=["POST"])
+def set_profile(session, profile):
+    success = euf_mgr.set_profile(profile)
+
+    return '', 200 if success else 400
 
 class FlaskThread(Thread):
-    def __init__(self, app):
+    def __init__(self, app, euf):
         super().__init__()
 
         # Create the flask server using werkzeug
@@ -68,10 +94,16 @@ class FlaskThread(Thread):
         self._ctx = app.app_context()
         self._ctx.push()
 
+        # Save the EUF thread in the global context so that we can access it from
+        # inside the requests
+        global euf_mgr
+        euf_mgr = euf
+
     def run(self):
         self._server.serve_forever()
 
     def shutdown(self):
+        self._ctx.pop()
         self._server.shutdown()
 
 
