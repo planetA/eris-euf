@@ -143,12 +143,14 @@ class EUFThread(Thread):
             print("{}: {}".format(n, p.name))
 
         # Internal management data
-        self._changed = True
-        self._bench_changed = False
-        self._last_benchmark = None
+        self._update = True
+        self._state = None
 
         self._configurations = None
         self._active_configuration = None
+
+        self._benchmark_configurations = {}
+        self._pregenerate_configurations()
 
     # Other support functions
     def get_configurations(self):
@@ -161,54 +163,129 @@ class EUFThread(Thread):
 
     def set_benchmark(self, bench_id):
         with self._lock:
-            success = self.session._activate_benchmark(bench_id)
-            self._changed = True
-            self._bench_changed = True
-
-            return success
+            return self.session._activate_benchmark(bench_id)
 
     def set_profile(self, profile_id):
         with self._lock:
-            success = self.session._activate_profile(profile_id)
-            self._changed = True
-            self._bench_changed = True
-
-            return success
+            return self.session._activate_profile(profile_id)
 
     def euf_on(self):
         with self._lock:
             self.eufon = True
-            self._changed = True
+            self._update = True
 
     def euf_off(self):
         with self._lock:
             self.eufon = False
-            self._changed = True
+            self._update = True
 
     def euf(self):
         with self._lock:
             return self.eufon
 
     # EUF related functions
-    def _current_bench(self, refresh=True):
-        if refresh:
-            self.session._update()
+    def _benchmark_states(self, benchmark_session):
+        state = {}
+        for n, b in benchmark_session.benchmarks.items():
+            state[n] = (b.state(False), b.active(False))
 
-        for _, b in self.session.benchmarks.items():
-            if b.active(False):
-                return b
+        return state
 
-        return None
+    def _bench_changed(self):
+        self.session._update()
+        old_state = self._state
+        self._state = self._benchmark_states(self.session)
 
-    def _current_profile(self, refresh=True):
-        if refresh:
-            self.session._update()
 
-        for p in self.session.profiles:
-            if p.active(False):
-                return p.name
+        if old_state is None:
+            return True
 
-        return None
+        for b in self._state:
+            os, oa = old_state[b]
+            ns, na = self._state[b]
+
+            if os != ns:
+                print("State changed for {}: {} to {}".format(b, os, ns))
+                return True
+            elif oa != na:
+                print("Active changed for {}: {} to {}".format(b, oa, na))
+                return True
+
+        return False
+
+    def _bench_running(self):
+        for b in self._state:
+            s, _ = self._state[b]
+
+            if s == "Running":
+                return (True, self.session.benchmarks[b])
+
+        return (False, None)
+
+    def _bench_loading(self):
+        for b in self._state:
+            s, _ = self._state[b]
+
+            if s == "Loading":
+                return (True, self.session.benchmarks[b])
+
+        return (False, None)
+
+    def _need_adaptation(self):
+        started_ctr = self.counters["started"].values(False)
+        if len(started_ctr) == 0:
+            return False, None
+
+        requested_tps = started_ctr[-1].value
+        available_tps = self._active_configuration.tps
+
+        if abs(requested_tps - available_tps) > (requested_tps * 0.05):
+            return True, requested_tps
+
+        return False, None
+
+    def _pregenerate_configurations(self):
+        for n in self.session.benchmarks:
+            b = self.session.benchmarks[n]
+
+            if b.name in self._benchmark_configurations:
+                continue
+
+            print("Generating configurations for {}".format(b.name))
+
+            # Generate all possible configurations based on the models
+            all_configurations = []
+            for freq in Hardware.config['freq']:
+                for cores in Hardware.config['cores']:
+                    for ht in Hardware.config['ht']:
+                        cpus = (ht+1)*cores
+                        params = Eris(cpus, ht).benchmarks(b.name)
+                        ipc = Hardware.IPC(
+                                memory_heaviness=params["memory_heaviness"](),avx_heaviness=params["avx_heaviness"](), branch_heaviness=params["branch_heaviness"](),
+                                compute_heaviness=params["compute_heaviness"](),cache_heaviness=params["cache_heaviness"](),
+                                cpus=cpus,freq=freq,ht=ht)
+                        p_pkg = Hardware.P_PKG(
+                                memory_heaviness=params["memory_heaviness"](),avx_heaviness=params["avx_heaviness"](),compute_heaviness=params["compute_heaviness"](),
+                                IPC=ipc,freq=freq,cpus=cpus,ht=ht)
+                        p_core = Hardware.P_Cores(
+                                nomemory_heaviness=params["nomemory_heaviness"](),avx_heaviness=params["avx_heaviness"](),compute_heaviness=params["compute_heaviness"](),
+                                IPC=ipc,freq=freq,cpus=cpus,ht=ht)
+                        p_ram = Hardware.P_Ram(memory_heaviness=params["memory_heaviness"](),
+                                IPC=ipc,freq=freq,cpus=cpus,ht=ht)
+                        tps = (freq*1000)/(params["ipt"]()/ipc)
+
+                        power = p_pkg + p_ram
+                        epr = power/tps
+
+                        all_configurations.append(EUFThread.Config(freq=freq, cores=cores, ht=True if ht == 1 else False,
+                                                                   cpus=cpus, ipc=ipc, power=power, tps=tps, epr=epr))
+
+            # Reduce the number of configurations to the pareto optimal ones
+            pareto_configurations =  [EUFThread.Config(**pc) for pc in paretoOptimize([c._asdict() for c in all_configurations], ["<power", ">tps"])]
+            print("Generated {} configurations, of which {} are pareto optimal".format(len(all_configurations), len(pareto_configurations)))
+
+            # Save the configurations in our internal buffer
+            self._benchmark_configurations[b.name] = pareto_configurations
 
     def _update_configurations(self):
         self._configurations = []
@@ -223,12 +300,24 @@ class EUFThread(Thread):
                                                          ht=True,
                                                          cpus=2*cores,
                                                          ipc=0, power=0, tps=0, epr=-1))
-            return
         else:
-            b = self._current_bench()
-            if b is None:
-                print("No benchmark running - using low energy configuration")
+            loading, b = self._bench_loading()
+            if loading:
+                print("{} is currently loading - using max performance configuration".format(b.name))
 
+                freq = max(Hardware.config["freq"])
+                cores = max(Hardware.config["cores"])
+
+                self._configurations.append(EUFThread.Config(freq=freq,
+                                                             cores=cores,
+                                                             ht=True,
+                                                             cpus=2*cores,
+                                                             ipc=0, power=0, tps=0, epr=-1))
+                return
+
+            running, b = self._bench_running()
+            if not running:
+                print("No benchmark running - using low energy configuration")
                 freq = min(Hardware.config["freq"])
                 cores = min(Hardware.config["cores"])
 
@@ -237,70 +326,32 @@ class EUFThread(Thread):
                                                              ht=False,
                                                              cpus=cores,
                                                              ipc=0, power=0, tps=0, epr=0))
-            elif b.id == self._last_benchmark:
-                print("Same benchmark running - use same configurations")
-                self._bench_changed = False
-                return
             else:
-                print("Generating configurations for {}".format(b.name))
+                print("{} is currently running - using pregenerated configuration".format(b.name))
 
-                # Generate all possible configurations based on the models
-                all_configurations = []
-                for freq in Hardware.config['freq']:
-                    for cores in Hardware.config['cores']:
-                        for ht in Hardware.config['ht']:
-                            cpus = (ht+1)*cores
-                            params = Eris(cpus, ht).benchmarks(b.name)
-                            ipc = Hardware.IPC(
-                                    memory_heaviness=params["memory_heaviness"](),avx_heaviness=params["avx_heaviness"](), branch_heaviness=params["branch_heaviness"](),
-                                    compute_heaviness=params["compute_heaviness"](),cache_heaviness=params["cache_heaviness"](),
-                                    cpus=cpus,freq=freq,ht=ht)
-                            p_pkg = Hardware.P_PKG(
-                                    memory_heaviness=params["memory_heaviness"](),avx_heaviness=params["avx_heaviness"](),compute_heaviness=params["compute_heaviness"](),
-                                    IPC=ipc,freq=freq,cpus=cpus,ht=ht)
-                            p_core = Hardware.P_Cores(
-                                    nomemory_heaviness=params["nomemory_heaviness"](),avx_heaviness=params["avx_heaviness"](),compute_heaviness=params["compute_heaviness"](),
-                                    IPC=ipc,freq=freq,cpus=cpus,ht=ht)
-                            p_ram = Hardware.P_Ram(memory_heaviness=params["memory_heaviness"](),
-                                    IPC=ipc,freq=freq,cpus=cpus,ht=ht)
-                            tps = (freq*1000)/(params["ipt"]()/ipc)
+                self._configurations = self._benchmark_configurations[b.name]
 
-                            power = p_pkg + p_ram
-                            epr = power/tps
-
-                            all_configurations.append(EUFThread.Config(freq=freq, cores=cores, ht=True if ht == 1 else False,
-                                                                       cpus=cpus, ipc=ipc, power=power, tps=tps, epr=epr))
-
-                # Reduce the number of configurations to the pareto optimal ones
-                self._configurations = [EUFThread.Config(**pc) for pc in paretoOptimize([c._asdict() for c in all_configurations], ["<power", ">tps"])]
-                print("Generated {} possible configurations:".format(len(self._configurations)))
-                for c in self._configurations:
-                    print(str(c))
-
-                self._bench_changed = False
-
-            self._last_benchmark = b.id if b is not None else None
-
-    def _find_best_configuration(self, target_tps):
+    def _find_best_configuration(self, target_tps=None, last_best=None):
         if len(self._configurations) == 1:
             return self._configurations[0]
 
-        best = None
+        best = last_best
         for c in self._configurations:
             if target_tps is None:
-                if best is None or c.epr < best.epr:
+                if best is None or c.power < best.power:
                     best = c
             else:
                 if best is None:
                     best = c
                 elif c.tps >= target_tps:
-                    if c.epr < best.epr:
+                    if c.power < best.power:
                         best = c
                 elif c.tps >= best.tps:
                     best = c
 
         if best is None:
-            print("Couldn't find a configuration")
+            print("WARNING: Couldn't find a configuration")
+            best = self._configurations[0]
 
         return best
 
@@ -332,47 +383,37 @@ class EUFThread(Thread):
     def run(self):
         try:
             while True:
+                with self._lock:
+                    if self._bench_changed() or self._update:
+                        # We need to update - do it
+                        self._update_configurations()
+
+                        best = self._find_best_configuration()
+                        self._apply_configuration(best)
+                        self._update = False
+                    elif self._bench_running():
+                        adapt, target_tps = self._need_adaptation()
+                        if adapt:
+                            best = self._find_best_configuration(target_tps, self._active_configuration)
+                            self._apply_configuration(best)
+
+                # Wait for another update
+                time.sleep(1)
+
                 # Output the latest counter values
                 self._ectrl._pull_monitoring_data()
                 ctr_values = []
                 for name, ctr in self.counters.items():
-                    if len(ctr.values(False)) > 0:
-                        ctr_values.append((name, ctr.values(False)[-1].value))
+                    vals = ctr.values(False)
+                    if len(vals) > 0:
+                        ctr_values.append((name, vals[-1].value))
 
                 print(" ".join(["{}: {}".format(n, v) for n, v in ctr_values]))
 
-                with self._lock:
-                    if self._changed:
-                        # The system configuration changed … update our configurations accordingly
-                        self._update_configurations()
-
-                        best = self._find_best_configuration(None)
-                        self._apply_configuration(best)
-                        self._changed = False
-                    elif self._bench_changed:
-                        while self._current_bench() is None:
-                            time.sleep(.1)
-
-                        self._update_configurations()
-
-                        best = self._find_best_configuration(None)
-                        self._apply_configuration(best)
-                    elif len(self.counters["started"].values(False)) > 0:
-                        # Check if we are able to achieve the target transactions/second
-                        started = self.counters["started"].values(False)[-1].value
-                        finished = self.counters["finished"].values(False)[-1].value
-
-                        if abs(started - finished) > (started * 0.05):
-                            best = self._find_best_configuration(started)
-                            self._apply_configuration(best)
-
-                # Wait for another update of the data
-                time.sleep(1)
 
         except KeyboardInterrupt:
             # Someone interrupted us - we are done now :)
             pass
-
 
 # Main
 def main():
