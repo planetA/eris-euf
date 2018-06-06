@@ -123,6 +123,8 @@ class EUFThread(Thread):
         for ctr in ectrl.counters():
             if ctr.dist_name == "Tasks.Started":
                 self.counters["started"] = ctr.monitor()
+            if ctr.dist_name == "Tasks.Active":
+                self.counters["active"] = ctr.monitor()
             elif ctr.dist_name == "Tasks.Finished":
                 self.counters["finished"] = ctr.monitor()
             elif ctr.dist_name == "Tasks.Latency Average":
@@ -232,7 +234,7 @@ class EUFThread(Thread):
         return (False, None)
 
     def _need_adaptation(self):
-        started_ctr = self.counters["started"].values(False)
+        started_ctr = self.counters["active"].values(False)
         if len(started_ctr) == 0:
             return False, None
 
