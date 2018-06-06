@@ -246,10 +246,12 @@ class EUFThread(Thread):
                 workers.append(i + max(Hardware.config['cores']))
 
         frequency = config.freq
+        power = config.power
+        tps = config.tps
 
         if self._curses is not None:
             self._config_win.clear(refresh=False)
-            self._config_win.print("Active configuration: {} @{}MHz".format(pretty_print(workers), frequency/1000),
+            self._config_win.print("Active configuration: {} @{}MHz with {}W, {}T/s".format(pretty_print(workers), frequency/1000, power, tps),
                 pos=(0,0))
 
 
