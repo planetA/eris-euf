@@ -326,6 +326,7 @@ class EUFThread(Thread):
         available_tps = self._active_configuration.tps
 
         if abs(needed_tps - available_tps) > (needed_tps * 0.05):
+            self._log("Need adaptation: {} requested T/s vs {} provided T/s".format(needed_tps, available_tps))
             return True, needed_tps
 
         return False, None
