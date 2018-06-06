@@ -234,15 +234,21 @@ class EUFThread(Thread):
         return (False, None)
 
     def _need_adaptation(self):
-        started_ctr = self.counters["active"].values(False)
-        if len(started_ctr) == 0:
+        started_ctr = self.counters["started"].values(False)
+        active_ctr = self.counters["active"].values(False)
+        if len(started_ctr) == 0 or len(active_ctr) == 0:
             return False, None
 
-        requested_tps = started_ctr[-1].value
+        started = started_ctr[-1].value
+        active = active_ctr[-1].value
+        if started > active:
+            needed_tps = started
+        else:
+            needed_tps = active
         available_tps = self._active_configuration.tps
 
-        if abs(requested_tps - available_tps) > (requested_tps * 0.05):
-            return True, requested_tps
+        if abs(needed_tps - available_tps) > (needed_tps * 0.05):
+            return True, needed_tps
 
         return False, None
 
@@ -319,15 +325,20 @@ class EUFThread(Thread):
 
             running, b = self._bench_running()
             if not running:
-                print("No benchmark running - using low energy configuration")
-                freq = min(Hardware.config["freq"])
-                cores = min(Hardware.config["cores"])
-
-                self._configurations.append(EUFThread.Config(freq=freq,
-                                                             cores=cores,
+                # Add a minimal configuration that we use when nothing is running and no
+                # tasks are outstanding.
+                self._configurations.append(EUFThread.Config(freq=min(Hardware.config["freq"]),
+                                                             cores=min(Hardware.config["cores"]),
                                                              ht=False,
-                                                             cpus=cores,
+                                                             cpus=min(Hardware.config["cores"]),
                                                              ipc=0, power=0, tps=0, epr=0))
+
+                # Also add the max configuration that we can use to finish outstanding tasks
+                self._configurations.append(EUFThread.Config(freq=max(Hardware.config["freq"]),
+                                                             cores=max(Hardware.config["cores"]),
+                                                             ht=True,
+                                                             cpus=2*max(Hardware.config["cores"]),
+                                                             ipc=1, power=1, tps=1, epr=0))
             else:
                 print("{} is currently running - using pregenerated configuration".format(b.name))
 
@@ -391,13 +402,14 @@ class EUFThread(Thread):
                         self._update_configurations()
 
                         best = self._find_best_configuration()
-                        self._apply_configuration(best)
                         self._update = False
-                    elif self._bench_running():
-                        adapt, target_tps = self._need_adaptation()
-                        if adapt:
-                            best = self._find_best_configuration(target_tps, self._active_configuration)
-                            self._apply_configuration(best)
+
+                    # Check if we need to adapt to a more or less power hungry configuration
+                    adapt, target_tps = self._need_adaptation()
+                    if adapt:
+                        best = self._find_best_configuration(target_tps, self._active_configuration)
+
+                    self._apply_configuration(best)
 
                 # Wait for another update
                 time.sleep(1)
