@@ -10,6 +10,8 @@ from argparse import ArgumentParser
 import time
 from collections import namedtuple
 
+from util import Curses, pretty_print
+
 
 def add_third_party_dir(f):
     base_path = dirname(abspath(f))
@@ -111,8 +113,12 @@ class FlaskThread(Thread):
 class EUFThread(Thread):
     Config = namedtuple("Config", ["freq", "cores", "ht", "cpus", "ipc", "power", "tps", "epr"])
 
-    def __init__(self, ectrl):
+    def __init__(self, ectrl, curses=None):
         super().__init__()
+
+        self._curses = curses
+        self._loglines = []
+        self._setup_curses()
 
         self._ectrl = ectrl
         self._lock = Lock()
@@ -136,13 +142,13 @@ class EUFThread(Thread):
         # Get the demo session
         self.session = ectrl.session("demo-sigmod")
 
-        print("Available benchmarks:")
+        self._log("Available benchmarks:")
         for n, b in self.session.benchmarks.items():
-            print("{}: {}".format(n, b.name))
+            self._log("{}: {}".format(n, b.name))
 
-        print("Available profiles:")
+        self._log("Available profiles:")
         for n, p in self.session.profiles.items():
-            print("{}: {}".format(n, p.name))
+            self._log("{}: {}".format(n, p.name))
 
         # Internal management data
         self._update = True
@@ -185,6 +191,62 @@ class EUFThread(Thread):
         with self._lock:
             return self.eufon
 
+    # Output related functions
+    def _setup_curses(self):
+        if self._curses is None:
+            return
+
+        self._root_win = self._curses.root_window()
+
+        height = self._root_win.dimension[1]
+        self._log_win = self._root_win.new_window(y=0, height=height-2)
+        self._ctr_win = self._root_win.new_window(y=height-2, height=1)
+        self._config_win = self._root_win.new_window(y=height-1, height=1 )
+
+    def _log(self, string):
+        if self._curses is None:
+            print(string)
+            return
+
+        self._loglines.append(string)
+
+        max_lines = self._log_win.dimension[1]
+        self._loglines = self._loglines[-max_lines:]
+
+        self._log_win.clear(refresh=False)
+        self._log_win.print("\n".join(self._loglines), pos=(0,0))
+
+    def _show_info(self):
+        # Output the counters
+        ctr_values = []
+        for name, ctr in self.counters.items():
+            vals = ctr.values(False)
+            if len(vals) > 0:
+                ctr_values.append((name, vals[-1].value))
+
+        if self._curses is None:
+            print(" ".join(["{}: {}".format(n, v) for n, v in ctr_values]))
+        else:
+            self._ctr_win.clear(refresh=False)
+            self._ctr_win.print(" ".join(["{}: {}".format(n, v) for n, v in ctr_values]), pos=(0,0))
+
+        # Output the current configuration
+        workers = []
+        config = self._active_configuration
+        for i in range(config.cores):
+            workers.append(i)
+        if config.ht:
+            for i in range(config.cores):
+                workers.append(i + max(Hardware.config['cores']))
+
+        frequency = config.freq
+
+        if self._curses is not None:
+            self._config_win.clear(refresh=False)
+            self._config_win.print("Active configuration: {} @{}MHz".format(pretty_print(workers), frequency/1000),
+                pos=(0,0))
+
+
     # EUF related functions
     def _benchmark_states(self, benchmark_session):
         state = {}
@@ -207,10 +269,10 @@ class EUFThread(Thread):
             ns, na = self._state[b]
 
             if os != ns:
-                print("State changed for {}: {} to {}".format(b, os, ns))
+                self._log("State changed for {}: {} to {}".format(b, os, ns))
                 return True
             elif oa != na:
-                print("Active changed for {}: {} to {}".format(b, oa, na))
+                self._log("Active changed for {}: {} to {}".format(b, oa, na))
                 return True
 
         return False
@@ -259,7 +321,7 @@ class EUFThread(Thread):
             if b.name in self._benchmark_configurations:
                 continue
 
-            print("Generating configurations for {}".format(b.name))
+            self._log("Generating configurations for {}".format(b.name))
 
             # Generate all possible configurations based on the models
             all_configurations = []
@@ -290,7 +352,7 @@ class EUFThread(Thread):
 
             # Reduce the number of configurations to the pareto optimal ones
             pareto_configurations =  [EUFThread.Config(**pc) for pc in paretoOptimize([c._asdict() for c in all_configurations], ["<power", ">tps"])]
-            print("Generated {} configurations, of which {} are pareto optimal".format(len(all_configurations), len(pareto_configurations)))
+            self._log("Generated {} configurations, of which {} are pareto optimal".format(len(all_configurations), len(pareto_configurations)))
 
             # Save the configurations in our internal buffer
             self._benchmark_configurations[b.name] = pareto_configurations
@@ -298,7 +360,7 @@ class EUFThread(Thread):
     def _update_configurations(self):
         self._configurations = []
         if not self.eufon:
-            print("EUF disabled - using max performance configuration")
+            self._log("EUF disabled - using max performance configuration")
 
             freq = max(Hardware.config["freq"])
             cores = max(Hardware.config["cores"])
@@ -311,7 +373,7 @@ class EUFThread(Thread):
         else:
             loading, b = self._bench_loading()
             if loading:
-                print("{} is currently loading - using max performance configuration".format(b.name))
+                self._log("{} is currently loading - using max performance configuration".format(b.name))
 
                 freq = max(Hardware.config["freq"])
                 cores = max(Hardware.config["cores"])
@@ -325,6 +387,7 @@ class EUFThread(Thread):
 
             running, b = self._bench_running()
             if not running:
+                self._log("No benchmark running")
                 # Add a minimal configuration that we use when nothing is running and no
                 # tasks are outstanding.
                 self._configurations.append(EUFThread.Config(freq=min(Hardware.config["freq"]),
@@ -340,7 +403,7 @@ class EUFThread(Thread):
                                                              cpus=2*max(Hardware.config["cores"]),
                                                              ipc=1, power=1, tps=1, epr=0))
             else:
-                print("{} is currently running - using pregenerated configuration".format(b.name))
+                self._log("{} is currently running - using pregenerated configuration".format(b.name))
 
                 self._configurations = self._benchmark_configurations[b.name]
 
@@ -362,10 +425,6 @@ class EUFThread(Thread):
                 elif c.tps >= best.tps:
                     best = c
 
-        if best is None:
-            print("WARNING: Couldn't find a configuration")
-            best = self._configurations[0]
-
         return best
 
     def _apply_configuration(self, config):
@@ -381,7 +440,7 @@ class EUFThread(Thread):
 
         frequency = config.freq
 
-        print("Applying configuration: {} @{}MHz".format(",".join([str(w) for w in workers]), frequency/1000))
+        self._log("Applying configuration: {} @{}MHz".format(pretty_print(workers), frequency/1000))
 
         for w in self.workers:
             w.frequency(frequency)
@@ -394,8 +453,8 @@ class EUFThread(Thread):
 
     # Our main loop
     def run(self):
-        try:
-            while True:
+        while True:
+            try:
                 with self._lock:
                     if self._bench_changed() or self._update:
                         # We need to update - do it
@@ -416,18 +475,11 @@ class EUFThread(Thread):
 
                 # Output the latest counter values
                 self._ectrl._pull_monitoring_data()
-                ctr_values = []
-                for name, ctr in self.counters.items():
-                    vals = ctr.values(False)
-                    if len(vals) > 0:
-                        ctr_values.append((name, vals[-1].value))
+                self._show_info()
 
-                print(" ".join(["{}: {}".format(n, v) for n, v in ctr_values]))
-
-
-        except KeyboardInterrupt:
-            # Someone interrupted us - we are done now :)
-            pass
+            except KeyboardInterrupt:
+                # Someone interrupted us - we are done now :)
+                break
 
 # Main
 def main():
@@ -445,31 +497,31 @@ def main():
     parsed_args = arguments.parse_args()
 
     # Connect to ERIS
-    ectrl = ErisCtrl(parsed_args.url, parsed_args.port, parsed_args.user, parsed_args.passwd)
     try:
-        ectrl._login()
+        with ErisCtrl(parsed_args.url, parsed_args.port, parsed_args.user, parsed_args.passwd) as ectrl, \
+            Curses() as curs:
+
+            # Prepare ERIS
+            ectrl.energy_management(False, False)       # Turn of ERIS' energy control loop (we are doing this now!)
+            for w in ectrl.workers():                   # Turn on all ERIS workers
+                w.enable()
+
+            # Start the EUF and flask threads
+            euf_thread = EUFThread(ectrl, curs)
+            flask_thread = FlaskThread(app, euf_thread)
+
+            euf_thread.start()
+            flask_thread.start()
+
+            # Wait for the EUF thread to join
+            euf_thread.join()
+
+            # Shutdown everything
+            flask_thread.shutdown()
+            flask_thread.join()
     except ErisCtrlError:
         print("Failed to connect to ERIS!")
         sys.exit(1)
-
-    # Prepare ERIS
-    ectrl.energy_management(False, False)       # Turn of ERIS' energy control loop (we are doing this now!)
-    for w in ectrl.workers():                   # Turn on all ERIS workers
-        w.enable()
-
-    # Start the EUF and flask threads
-    euf_thread = EUFThread(ectrl)
-    flask_thread = FlaskThread(app, euf_thread)
-
-    euf_thread.start()
-    flask_thread.start()
-
-    # Wait for the EUF thread to join
-    euf_thread.join()
-
-    # Shutdown everything
-    flask_thread.shutdown()
-    flask_thread.join()
 
 if __name__ == "__main__":
     main()
