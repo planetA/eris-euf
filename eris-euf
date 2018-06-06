@@ -276,18 +276,19 @@ class EUFThread(Thread):
         if old_state is None:
             return True
 
+        changed = False
         for b in self._state:
             os, oa = old_state[b]
             ns, na = self._state[b]
 
             if os != ns:
                 self._log("State changed for {}: {} to {}".format(b, os, ns))
-                return True
+                changed = True
             elif oa != na:
                 self._log("Active changed for {}: {} to {}".format(b, oa, na))
-                return True
+                changed = True
 
-        return False
+        return changed
 
     def _bench_running(self):
         for b in self._state:
