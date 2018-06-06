@@ -311,6 +311,8 @@ class EUFThread(Thread):
     def _need_adaptation(self):
         if self._active_configuration is None:
             return False, None
+        if len(self._configurations) == 1:
+            return False, None
 
         started_ctr = self.counters["started"].values(False)
         active_ctr = self.counters["active"].values(False)
