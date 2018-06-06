@@ -364,7 +364,7 @@ class EUFThread(Thread):
             workers.append(i)
         if config.ht:
             for i in range(config.cores):
-                workers.append(i + 2) #max(Hardware.config['cores']))
+                workers.append(i + max(Hardware.config['cores']))
 
         frequency = config.freq
 
