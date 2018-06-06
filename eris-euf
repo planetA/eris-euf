@@ -411,12 +411,12 @@ class EUFThread(Thread):
                                                              cpus=min(Hardware.config["cores"]),
                                                              ipc=0, power=0, tps=0, epr=0))
 
-                # Also add the max configuration that we can use to finish outstanding tasks
-                self._configurations.append(EUFThread.Config(freq=max(Hardware.config["freq"]),
-                                                             cores=max(Hardware.config["cores"]),
-                                                             ht=True,
-                                                             cpus=2*max(Hardware.config["cores"]),
-                                                             ipc=1, power=1, tps=1, epr=0))
+                # Also add the last active configuration if there is one and if its not
+                # already the idle config. We can use this configuration if there are
+                # still requests outstanding.
+                if self._active_configuration is not None and \
+                        self._active_configuration != self._configurations[0]:
+                    self._configurations.append(self._active_configuration)
             else:
                 self._log("{} is currently running - using pregenerated configuration".format(b.name))
 
