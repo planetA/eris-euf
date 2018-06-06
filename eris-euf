@@ -46,7 +46,43 @@ def index():
 def configurations():
     global euf_mgr
 
-    return "TBD"
+    configs, active_config = euf_mgr.get_configurations()
+
+    json_configs = []
+
+    max_freq = max(Hardware.config["freq"])
+    min_freq = min(Hardware.config["freq"])
+
+    max_epr = 0
+    max_tps = 0
+    for c in configs:
+        data = {}
+        data["cpuCount"] = c.cpus
+        data["avgCoreFrequency"] = c.freq
+        data["avgCoreFrequencyLevel"] = (c.freq - min_freq) / (max_freq - min_freq) * 100
+        data["uncoreFrequency"] = 2400000
+        data["uncoreFreqeuncyLevel"] = 100
+        data["relativePerformance"] = c.tps
+        data["relativeEE"] = c.epr
+        data["active"] = False if active_config is None else c == active_config
+
+        json_configs.append(data)
+
+        if c.epr > max_epr:
+            max_epr = c.epr
+        if c.tps > max_tps:
+            max_tps = c.tps
+
+    for jc in json_configs:
+        jc["relativePerformance"] = jc["relativePerformance"] / max_tps * 100
+        jc["relativeEE"] = jc["relativeEE"] / max_epr * 100
+
+    return jsonify({"sockets" : [{
+            "logicalId" : 0,
+            "configurations" : json_configs,
+            "adapting" : False,
+            "reevalLeft" : 0
+        }]})
 
 @app.route("/servicestatus", methods=["GET"])
 def service_status():
@@ -173,11 +209,7 @@ class EUFThread(Thread):
     # Other support functions
     def get_configurations(self):
         with self._lock:
-            return self._configurations
-
-    def get_active_configuration(self):
-        with self._lock:
-            return self._active_configuration
+            return self._configurations, self._active_configuration
 
     def set_benchmark(self, bench_id):
         with self._lock:
@@ -388,7 +420,7 @@ class EUFThread(Thread):
                                                          cores=cores,
                                                          ht=True,
                                                          cpus=2*cores,
-                                                         ipc=0, power=0, tps=0, epr=-1))
+                                                         ipc=1, power=1, tps=1, epr=1))
         else:
             loading, b = self._bench_loading()
             if loading:
@@ -401,7 +433,7 @@ class EUFThread(Thread):
                                                              cores=cores,
                                                              ht=True,
                                                              cpus=2*cores,
-                                                             ipc=0, power=0, tps=0, epr=-1))
+                                                             ipc=1, power=1, tps=1, epr=1))
                 return
 
             running, b = self._bench_running()
@@ -413,7 +445,7 @@ class EUFThread(Thread):
                                                              cores=min(Hardware.config["cores"]),
                                                              ht=False,
                                                              cpus=min(Hardware.config["cores"]),
-                                                             ipc=0, power=0, tps=0, epr=0))
+                                                             ipc=1, power=1, tps=1, epr=1))
 
                 # Also add the last active configuration if there is one and if its not
                 # already the idle config. We can use this configuration if there are
