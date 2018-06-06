@@ -5,7 +5,7 @@ from werkzeug.serving import make_server
 import sys
 from os import listdir
 from os.path import join, dirname, abspath, isdir
-from threading import Thread, Lock
+from threading import Thread, Lock, Event
 from argparse import ArgumentParser
 import time
 from collections import namedtuple
@@ -117,16 +117,18 @@ class FlaskThread(Thread):
 class EUFThread(Thread):
     Config = namedtuple("Config", ["freq", "cores", "ht", "cpus", "ipc", "power", "tps", "epr"])
 
-    def __init__(self, ectrl, curses=None):
+    def __init__(self, ectrl, curses, event):
         super().__init__()
+
+        self._ectrl = ectrl
+        self._lock = Lock()
+        self.eufon = True
 
         self._curses = curses
         self._loglines = []
         self._setup_curses()
 
-        self._ectrl = ectrl
-        self._lock = Lock()
-        self.eufon = True
+        self._event = event
 
         # Register the counters
         self.counters = {}
@@ -457,35 +459,56 @@ class EUFThread(Thread):
 
     # Our main loop
     def run(self):
-        while True:
-            try:
-                with self._lock:
-                    if self._bench_changed() or self._update:
-                        # We need to update - do it
-                        self._update_configurations()
+        while not self._event.is_set():
+            with self._lock:
+                if self._bench_changed() or self._update:
+                    # We need to update - do it
+                    self._update_configurations()
 
-                        best = self._find_best_configuration()
-                        self._update = False
+                    best = self._find_best_configuration()
+                    self._update = False
 
-                    # Check if we need to adapt to a more or less power hungry configuration
-                    adapt, target_tps = self._need_adaptation()
-                    if adapt:
-                        best = self._find_best_configuration(target_tps, self._active_configuration)
+                # Check if we need to adapt to a more or less power hungry configuration
+                adapt, target_tps = self._need_adaptation()
+                if adapt:
+                    best = self._find_best_configuration(target_tps, self._active_configuration)
 
-                    self._apply_configuration(best)
+                self._apply_configuration(best)
 
-                # Wait for another update
-                time.sleep(1)
+            # Wait for another update
+            time.sleep(1)
 
-                # Output the latest counter values
-                self._ectrl._pull_monitoring_data()
-                self._show_info()
-
-            except KeyboardInterrupt:
-                # Someone interrupted us - we are done now :)
-                break
+            # Output the latest counter values
+            self._ectrl._pull_monitoring_data()
+            self._show_info()
 
 # Main
+def run(ectrl, curs):
+    # Prepare ERIS
+    ectrl.energy_management(False, False)       # Turn of ERIS' energy control loop (we are doing this now!)
+    for w in ectrl.workers():                   # Turn on all ERIS workers
+        w.enable()
+
+    kill_event = Event()
+
+    # Start the EUF and flask threads
+    euf_thread = EUFThread(ectrl, curs, kill_event)
+    flask_thread = FlaskThread(app, euf_thread)
+
+    euf_thread.start()
+    flask_thread.start()
+
+    # Wait for the EUF thread to join
+    try:
+        euf_thread.join()
+    except KeyboardInterrupt:
+        kill_event.set()
+        euf_thread.join()
+
+    # Shutdown everything
+    flask_thread.shutdown()
+    flask_thread.join()
+
 def main():
     # Parse the command line arguments
     arguments = ArgumentParser(description="EUF manager for ERIS")
@@ -497,32 +520,20 @@ def main():
             type=str, dest="user", default="euf")
     arguments.add_argument("--passwd", help="The password that should be used to connect to ERIS (default=euf)",
             type=str, dest="passwd", default="euf")
+    arguments.add_argument("--nocurses", help="Disable curses output", action="store_true", default=False,
+            dest="nocurses")
 
     parsed_args = arguments.parse_args()
 
     # Connect to ERIS
     try:
-        with ErisCtrl(parsed_args.url, parsed_args.port, parsed_args.user, parsed_args.passwd) as ectrl, \
-            Curses() as curs:
-
-            # Prepare ERIS
-            ectrl.energy_management(False, False)       # Turn of ERIS' energy control loop (we are doing this now!)
-            for w in ectrl.workers():                   # Turn on all ERIS workers
-                w.enable()
-
-            # Start the EUF and flask threads
-            euf_thread = EUFThread(ectrl, curs)
-            flask_thread = FlaskThread(app, euf_thread)
-
-            euf_thread.start()
-            flask_thread.start()
-
-            # Wait for the EUF thread to join
-            euf_thread.join()
-
-            # Shutdown everything
-            flask_thread.shutdown()
-            flask_thread.join()
+        if parsed_args.nocurses:
+            with ErisCtrl(parsed_args.url, parsed_args.port, parsed_args.user, parsed_args.passwd) as ectrl:
+                run(ectrl, None)
+        else:
+            with ErisCtrl(parsed_args.url, parsed_args.port, parsed_args.user, parsed_args.passwd) as ectrl, \
+                 Curses() as curs:
+                run(ectrl, curs)
     except ErisCtrlError:
         print("Failed to connect to ERIS!")
         sys.exit(1)
