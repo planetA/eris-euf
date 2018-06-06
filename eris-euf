@@ -445,6 +445,7 @@ class EUFThread(Thread):
 
     def _apply_configuration(self, config):
         if self._active_configuration is not None and self._active_configuration == config:
+            self._active_configuration = config
             return
 
         workers = []
@@ -476,14 +477,14 @@ class EUFThread(Thread):
                     self._update_configurations()
 
                     best = self._find_best_configuration()
+                    self._apply_configuration(best)
                     self._update = False
 
                 # Check if we need to adapt to a more or less power hungry configuration
                 adapt, target_tps = self._need_adaptation()
                 if adapt:
                     best = self._find_best_configuration(target_tps, self._active_configuration)
-
-                self._apply_configuration(best)
+                    self._apply_configuration(best)
 
             # Wait for another update
             time.sleep(1)
