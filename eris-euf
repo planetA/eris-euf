@@ -115,7 +115,11 @@ class FlaskThread(Thread):
 
 
 class EUFThread(Thread):
-    Config = namedtuple("Config", ["freq", "cores", "ht", "cpus", "ipc", "power", "tps", "epr"])
+    class Config(namedtuple("Config", ["freq", "cores", "ht", "cpus", "ipc", "power", "tps", "epr"])):
+        __slots__ = ()
+
+        def __eq__(self, other):
+            return self.freq == other.freq and self.cores == other.cores and self.ht == other.ht
 
     def __init__(self, ectrl, curses, event):
         super().__init__()
@@ -304,6 +308,9 @@ class EUFThread(Thread):
         return (False, None)
 
     def _need_adaptation(self):
+        if self._active_configuration is None:
+            return False, None
+
         started_ctr = self.counters["started"].values(False)
         active_ctr = self.counters["active"].values(False)
         if len(started_ctr) == 0 or len(active_ctr) == 0:
@@ -436,7 +443,7 @@ class EUFThread(Thread):
         return best
 
     def _apply_configuration(self, config):
-        if self._active_configuration == config:
+        if self._active_configuration is not None and self._active_configuration == config:
             return
 
         workers = []
