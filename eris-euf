@@ -28,7 +28,7 @@ try:
     from hardware_model import Hardware
 except ImportError:
     print("Model files are missing. Abort", file=sys.stderr)
-#    sys.exit(1)
+    sys.exit(1)
 
 
 
