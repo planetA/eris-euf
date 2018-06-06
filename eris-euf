@@ -9,6 +9,7 @@ from threading import Thread, Lock
 from argparse import ArgumentParser
 import time
 from collections import namedtuple
+import logging
 
 from util import Curses, pretty_print
 
@@ -91,6 +92,9 @@ def set_profile(session, profile):
 class FlaskThread(Thread):
     def __init__(self, app, euf):
         super().__init__()
+
+        # Disable flask logging completely
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
         # Create the flask server using werkzeug
         self._server = make_server("localhost", 5000, app)
