@@ -1,0 +1,5 @@
+__pycache__
+
+# always ignore the model files
+eris_model.py
+hardware_model.py
