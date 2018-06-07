@@ -53,9 +53,11 @@ def configurations():
     max_freq = max(Hardware.config["freq"])
     min_freq = min(Hardware.config["freq"])
 
-    max_epr = 0
+    max_ee = 0
     max_tps = 0
     for c in configs:
+        ee = 1/c.epr
+
         data = {}
         data["cpuCount"] = c.cpus
         data["avgCoreFrequency"] = c.freq
@@ -63,19 +65,19 @@ def configurations():
         data["uncoreFrequency"] = 2400000
         data["uncoreFreqeuncyLevel"] = 100
         data["relativePerformance"] = c.tps
-        data["relativeEE"] = c.epr
+        data["relativeEE"] = ee
         data["active"] = False if active_config is None else c == active_config
 
         json_configs.append(data)
 
-        if c.epr > max_epr:
-            max_epr = c.epr
+        if ee > max_ee:
+            max_ee = ee
         if c.tps > max_tps:
             max_tps = c.tps
 
     for jc in json_configs:
         jc["relativePerformance"] = jc["relativePerformance"] / max_tps * 100
-        jc["relativeEE"] = jc["relativeEE"] / max_epr * 100
+        jc["relativeEE"] = jc["relativeEE"] / max_ee * 100
 
     return jsonify({"sockets" : [{
             "logicalId" : 0,
