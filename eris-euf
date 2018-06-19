@@ -11,7 +11,8 @@ import time
 from collections import namedtuple
 import logging
 
-from util import Curses, pretty_print
+from util import pretty_print
+from util.curses import Curses
 
 
 def add_third_party_dir(f):
@@ -169,23 +170,24 @@ class EUFThread(Thread):
         self._lock = Lock()
         self.eufon = True
 
-        self._curses = curses
         self._loglines = []
+
+        self._curses = curses
         self._setup_curses()
 
         self._event = event
 
         # Register the counters
-        self.counters = {}
+        self._counters = {}
         for ctr in ectrl.counters():
             if ctr.dist_name == "Tasks.Started":
-                self.counters["started"] = ctr.monitor()
+                self._counters["started"] = ctr.monitor()
             if ctr.dist_name == "Tasks.Active":
-                self.counters["active"] = ctr.monitor()
+                self._counters["active"] = ctr.monitor()
             elif ctr.dist_name == "Tasks.Finished":
-                self.counters["finished"] = ctr.monitor()
+                self._counters["finished"] = ctr.monitor()
             elif ctr.dist_name == "Tasks.Latency Average":
-                self.counters["latency"] = ctr.monitor()
+                self._counters["latency"] = ctr.monitor()
 
         # Get all the workers
         self.workers = ectrl.workers()
@@ -245,56 +247,206 @@ class EUFThread(Thread):
 
         self._root_win = self._curses.root_window()
 
-        height = self._root_win.dimension[1]
-        self._log_win = self._root_win.new_window(y=0, height=height-2)
-        self._ctr_win = self._root_win.new_window(y=height-2, height=1)
-        self._config_win = self._root_win.new_window(y=height-1, height=1 )
+        self._show_stats = self._show_config = self._show_plots \
+                = self._show_log = True
 
-    def _log(self, string):
+        # Create the windows and resize them to an appropriate size
+        self._stats_win = self._root_win.new_window(0,0,1,1)
+        self._config_win = self._root_win.new_window(0,0,1,1)
+        self._power_plot_win = self._root_win.new_window(0,0,1,1)
+        self._perf_plot_win = self._root_win.new_window(0,0,1,1)
+        self._log_win = self._root_win.new_window(0,0,1,1)
+
+        self._resize_windows(refresh=False)
+
+    def _resize_windows(self, refresh=True):
         if self._curses is None:
-            print(string)
             return
 
-        self._loglines.append(string)
+        width, height = self._root_win.dimension
 
-        max_lines = self._log_win.dimension[1]
-        self._loglines = self._loglines[-max_lines:]
+        # We want to have the following layout if there is enough space:
+        #
+        # |-------------------------------------------------------------|
+        # |  Current statistics                                         |
+        # |-------------------------------------------------------------|
+        # |  Current active configuration                               |
+        # |-------------------------------------------------------------|
+        # |                             |                               |
+        # |         Plot                |           Plot                |
+        # |   Power vs est. Power       |   Performance vs. est. Perf   |
+        # |                             |                               |
+        # |                             |                               |
+        # |-------------------------------------------------------------|
+        # | Log                                                         |
+        # |                                                             |
+        # |                                                             |
+        # |-------------------------------------------------------------|
+        #
+        # If we don't have enough width, we omit the performance plot and
+        # if we don't have enough height, we omit the whole plot area and
+        # instead only show estimated vs. real values without history. If
+        # height is really small we omit the log area as well if necessary.
+        # The minimum that we will show is the current configuration.
 
-        self._log_win.clear(refresh=False)
-        self._log_win.print("\n".join(self._loglines), pos=(0,0))
+        self._show_stats = self._show_config = self._show_plots \
+                = self._show_log = True
 
-    def _show_info(self):
+        if height >= 40 and width >= 60:
+            # we have enough space for everything
+            self._stats_win.resize(width, 1).move(0, 0)
+            self._config_win.resize(width, 1).move(0, 1)
+
+            self._power_plot_win.resize(width/2,height-20).move(0, 2)
+            self._perf_plot_win.resize(width/2,height-20).move(width/2, 2)
+            self._power_plot_size = self._perf_plot_size = (width/2, height-20)
+
+            self._log_win.resize(width, 18).move(0, height-18)
+        elif height >= 40 and width < 60 and width > 30:
+            # Not enough width for the perf plot so display only the values
+            self._stats_win.resize(width, 1).move(0, 0)
+            self._config_win.resize(width, 1).move(0, 1)
+
+            self._power_plot_win.resize(width-20, height-20).move(0, 2)
+            self._perf_plot_win.resize(20, height-20).move(width-20, 2)
+            self._power_plot_size = (width-20, height-20)
+            self._perf_plot_size = None
+
+            self._log_win.resize(width, 18).move(0, height-18)
+        elif height >= 40 and width <= 30:
+            # Not enough width for any of the plots, just display the values
+            self._stats_win.resize(width, 1).move(0, 0)
+            self._config_win.resize(width, 1).move(0, 1)
+
+            self._power_plot_win.resize(width, 5).move(0, 2)
+            self._perf_plot_win.resize(width, 5).move(0, 7)
+            self._power_plot_size = self._perf_plot_size = None
+
+            self._log_win.resize(width, height-12).move(0, 12)
+        elif height < 40 and height >= 20:
+            # Not enough height to show the plots, just show the values
+            self._stats_win.resize(width, 1).move(0, 0)
+            self._config_win.resize(width, 1).move(0, 1)
+
+            self._power_plot_win.resize(width, 5).move(0, 2)
+            self._perf_plot_win.resize(width, 5).move(0, 7)
+            self._power_plot_size = self._perf_plot_size = None
+
+            self._log_win.resize(width, height-12).move(0, 12)
+        elif height < 20 and height >= 12:
+            # Even less height, don't show the log anymore in favor of the power and performance values
+            self._power_plot_win.resize(width, 5).move(0, 2)
+            self._perf_plot_win.resize(width, 5).move(0, 7)
+            self._power_plot_size = self._perf_plot_size = None
+
+            self._show_log = False
+            self._log_win.resize(1, 1).move(0, 0)
+        elif height < 12 and height >= 2:
+            # Even less height, only show the statistics and the currently used configuration
+            self._stats_win.resize(width, 1).move(0, 0)
+            self._config_win.resize(width, 1).move(0, 1)
+
+            self._show_plots = False
+            self._power_plot_win.resize(1, 1).move(0, 0)
+            self._perf_plot_win.resize(1, 1).move(0, 0)
+            self._power_plot_size = self._perf_plot_size = None
+
+            self._show_log = False
+            self._log_win.resize(1, 1).move(0, 0)
+        elif height == 1:
+            # We only have one line left, hence only show the currently used configuration
+            self._config_win.resize(width, 1).move(0, 0)
+
+            self._show_stats = False
+            self._stats_win.resize(1, 1).move(0, 0)
+
+            self._show_plots = False
+            self._power_plot_win.resize(1, 1).move(0, 0)
+            self._perf_plot_win.resize(1, 1).move(0, 0)
+            self._power_plot_size = self._perf_plot_size = None
+
+            self._show_log = False
+            self._log_win.resize(1, 1).move(0, 0)
+
+        if refresh:
+            self._refresh()
+
+    def _refresh_stats(self):
+        if not self._show_stats:
+            return
+
         # Output the counters
         ctr_values = []
-        for name, ctr in self.counters.items():
+        for name, ctr in self._counters.items():
             vals = ctr.values(False)
             if len(vals) > 0:
                 ctr_values.append((name, vals[-1].value))
 
-        if self._curses is None:
-            print(" ".join(["{}: {}".format(n, v) for n, v in ctr_values]))
-        else:
-            self._ctr_win.clear(refresh=False)
-            self._ctr_win.print(" ".join(["{}: {}".format(n, v) for n, v in ctr_values]), pos=(0,0))
+        self._stats_win.clear(refresh=False)
+        self._stats_win.print(" ".join(["{}: {}".format(n, v) for n, v in ctr_values]), pos=(0,0))
 
-        # Output the current configuration
-        workers = []
+        width, height = self._root_win.dimension
+        self._stats_win.print(" -- {}x{}".format(width, height))
+
+    def _refresh_config(self):
+        if not self._show_config:
+            return
+
         config = self._active_configuration
-        for i in range(config.cores):
-            workers.append(i)
-        if config.ht:
+        if config is None:
+            self._config_win.clear(refresh=False)
+            self._config_win.print("Active configuration: None", pos=(0,0))
+        else:
+            workers = []
             for i in range(config.cores):
-                workers.append(i + max(Hardware.config['cores']))
+                workers.append(i)
+            if config.ht:
+                for i in range(config.cores):
+                    workers.append(i + max(Hardware.config['cores']))
 
-        frequency = config.freq
-        power = config.power
-        tps = config.tps
+            frequency = config.freq
+            power = config.power
+            tps = config.tps
 
-        if self._curses is not None:
             self._config_win.clear(refresh=False)
             self._config_win.print("Active configuration: {} @{}MHz with {}W, {}T/s".format(pretty_print(workers), frequency/1000, power, tps),
-                pos=(0,0))
+                    pos=(0,0))
 
+    def _refresh_plots(self):
+        if not self._show_plots:
+            return
+
+        self._perf_plot_win.clear(refresh=False)
+        self._perf_plot_win.print("PERF", pos=(0,0))
+
+        self._power_plot_win.clear(refresh=False)
+        self._power_plot_win.print("POWER", pos=(0,0))
+
+    def _refresh_log(self):
+        if not self._show_log:
+            return
+
+        maxlines = self._log_win.dimension[1]
+        self._log_win.clear(refresh=False)
+        self._log_win.print("\n".join(self._loglines[-maxlines:]), pos=(0,0))
+
+    def _refresh(self):
+        if self._curses is None:
+            return
+
+        self._root_win.refresh()
+
+        self._refresh_stats()
+        self._refresh_config()
+        self._refresh_plots()
+        self._refresh_log()
+
+    def _log(self, string):
+        self._loglines.append(string)
+
+        if self._curses is None:
+            print(string)
+            return
 
     # EUF related functions
     def _benchmark_states(self, benchmark_session):
@@ -351,8 +503,8 @@ class EUFThread(Thread):
         if len(self._configurations) == 1:
             return False, None
 
-        started_ctr = self.counters["started"].values(False)
-        active_ctr = self.counters["active"].values(False)
+        started_ctr = self._counters["started"].values(False)
+        active_ctr = self._counters["active"].values(False)
         if len(started_ctr) == 0 or len(active_ctr) == 0:
             return False, None
 
@@ -527,11 +679,16 @@ class EUFThread(Thread):
                     self._apply_configuration(best)
 
             # Wait for another update
-            time.sleep(1)
+            key = self._root_win.get_user_input(timeout=1000)
+            if key == Curses.Keys.RESIZE:
+                self._resize_windows()
+            elif key == "q" or key == Curses.Keys.ESC:
+                break
 
             # Output the latest counter values
             self._ectrl._pull_monitoring_data()
-            self._show_info()
+            self._refresh()
+
 
 # Main
 def run(ectrl, curs):
