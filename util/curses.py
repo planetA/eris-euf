@@ -502,6 +502,10 @@ class Window:
         complete = True
         cur_interpreter = Window.DefaultInterpreter()
 
+        # Before we do anything check if there are any Feed Forward characters,
+        # because if, we will start processing the string right after this character.
+        cur_pos = string.rfind('\014') + 1
+
         while cur_pos < len(string):
             # Try to find the next escape sequence.
             try:
