@@ -13,6 +13,7 @@ import logging
 
 from util import pretty_print
 from util.curses import Curses
+from util.plotting import AsciiPlot
 
 
 def add_third_party_dir(f):
@@ -174,6 +175,7 @@ class EUFThread(Thread):
 
         self._curses = curses
         self._setup_curses()
+        self._setup_plots()
 
         self._event = event
 
@@ -258,6 +260,21 @@ class EUFThread(Thread):
         self._log_win = self._root_win.new_window(0,0,1,1)
 
         self._resize_windows(refresh=False)
+
+    def _setup_plots(self):
+        if self._curses is None:
+            return
+
+        def new_plot(width, height, title):
+            p = AsciiPlot(width, height)
+            p.set("border", "3")
+            p.set("key", "center", "top")
+            p.set("title", "'{}'".format(title))
+
+            return p
+
+        self._power_plot = new_plot(10, 10, "Power")
+        self._perf_plot = new_plot(10, 10, "Performance")
 
     def _resize_windows(self, refresh=True):
         if self._curses is None:
@@ -412,15 +429,40 @@ class EUFThread(Thread):
             self._config_win.print("Active configuration: {} @{}MHz with {}W, {}T/s".format(pretty_print(workers), frequency/1000, power, tps),
                     pos=(0,0))
 
+    def _refresh_power_plot(self):
+        self._power_plot_win.clear(refresh=False)
+
+        if self._power_plot_size is None:
+            self._power_plot_win.print("Current power: 10W", pos=(0,0), refresh=False)
+            self._power_plot_win.print("Estimated power: 10W", pos=(0,1))
+        else:
+            width, height = self._power_plot_size
+            self._power_plot.resize(width-1, height-1)
+
+            self._power_plot_win.safe_print(
+                    self._power_plot.plot("x**2 title 'real'", "x**2 + 4 title 'estimated'"),
+                    pos=(0,0))
+
+    def _refresh_perf_plot(self):
+        self._perf_plot_win.clear(refresh=False)
+
+        if self._perf_plot_size is None:
+            self._perf_plot_win.print("Current performance: 10 T/s", pos=(0,0), refresh=False)
+            self._perf_plot_win.print("Estimated performance: 11 T/s", pos=(0,1))
+        else:
+            width, height = self._perf_plot_size
+            self._perf_plot.resize(width-1, height-1)
+
+            self._perf_plot_win.safe_print(
+                    self._perf_plot.plot("x**3 title 'real'", "x**3 + 4 title 'estimated'"),
+                    pos=(0,0))
+
     def _refresh_plots(self):
         if not self._show_plots:
             return
 
-        self._perf_plot_win.clear(refresh=False)
-        self._perf_plot_win.print("PERF", pos=(0,0))
-
-        self._power_plot_win.clear(refresh=False)
-        self._power_plot_win.print("POWER", pos=(0,0))
+        self._refresh_power_plot()
+        self._refresh_perf_plot()
 
     def _refresh_log(self):
         if not self._show_log:
