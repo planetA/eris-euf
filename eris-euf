@@ -823,6 +823,8 @@ class EUFThread(Thread):
                     self._resize_windows()
                 elif key == "q" or key == Curses.Keys.ESC:
                     break
+                elif key == "c":
+                    self._monitoring_data = { "power" : [], "performance" : [] }
 
             # Output the latest counter values
             self._update_monitoring_data()
