@@ -721,11 +721,14 @@ class EUFThread(Thread):
                     self._apply_configuration(best)
 
             # Wait for another update
-            key = self._root_win.get_user_input(timeout=1000)
-            if key == Curses.Keys.RESIZE:
-                self._resize_windows()
-            elif key == "q" or key == Curses.Keys.ESC:
-                break
+            if not self._curses:
+                time.sleep(1)
+            else:
+                key = self._root_win.get_user_input(timeout=1000)
+                if key == Curses.Keys.RESIZE:
+                    self._resize_windows()
+                elif key == "q" or key == Curses.Keys.ESC:
+                    break
 
             # Output the latest counter values
             self._ectrl._pull_monitoring_data()
