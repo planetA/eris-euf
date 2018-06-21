@@ -185,7 +185,10 @@ class EUFThread(Thread):
         self._event = event
 
         # Our internal monitoring data
-        self._rapl_counters = RAPLCounter()
+        try:
+            self._rapl_counters = RAPLCounter()
+        except ValueError:
+            self._rapl_counters = None
 
         self._monitoring_data = {
             "power" : [],
@@ -764,6 +767,10 @@ class EUFThread(Thread):
             self._monitoring_data["performance"].append((datetime.now(), actual_perf, estimated_perf))
 
     def _pull_power_data(self):
+        if self._rapl_counters is None:
+            self._monitoring_data["power"].append((datetime.now(), 0, self._active_configuration.power))
+            return
+
         rapl_counters = RAPLCounter()
 
         diff = self._rapl_counters - rapl_counters
