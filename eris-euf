@@ -171,6 +171,7 @@ class EUFThread(Thread):
 
         # Various cosmetic settings
         self._history_length = 300
+        self._refresh_time = 1000
 
         self._ectrl = ectrl
         self._lock = Lock()
@@ -185,6 +186,7 @@ class EUFThread(Thread):
         self._event = event
 
         # Our internal monitoring data
+        self._last_refresh = None
         try:
             self._rapl_counters = RAPLCounter()
         except ValueError:
@@ -787,8 +789,12 @@ class EUFThread(Thread):
         self._rapl_counters = rapl_counters
 
     def _update_monitoring_data(self):
-        self._pull_performance_data()
-        self._pull_power_data()
+        if self._last_refresh is None or \
+                (datetime.now()-self._last_refresh).total_seconds() * 1000 > self._refresh_time:
+            self._pull_performance_data()
+            self._pull_power_data()
+
+            self._last_refresh = datetime.now()
 
     # Our main loop
     def run(self):
