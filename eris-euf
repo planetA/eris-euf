@@ -10,10 +10,12 @@ from argparse import ArgumentParser
 import time
 from collections import namedtuple
 import logging
+from datetime import datetime
 
 from util import pretty_print
 from util.curses import Curses
 from util.plotting import AsciiPlot
+from util.rapl import RAPLCounter
 
 
 def add_third_party_dir(f):
@@ -179,7 +181,15 @@ class EUFThread(Thread):
 
         self._event = event
 
-        # Register the counters
+        # Our internal monitoring data
+        self._rapl_counters = RAPLCounter()
+
+        self._monitoring_data = {
+            "power" : [],
+            "performance" : []
+        }
+
+        # Register the ERIS performance counters
         self._counters = {}
         for ctr in ectrl.counters():
             if ctr.dist_name == "Tasks.Started":
@@ -702,6 +712,33 @@ class EUFThread(Thread):
 
         self._active_configuration = config
 
+    # Data collecting methods
+    def _pull_performance_data(self):
+        self._ectrl._pull_monitoring_data()
+
+        # Get the latest performance value
+        perf_vals = self._counters["finished"].values(False)
+        if len(perf_vals) > 0:
+            actual_perf = perf_vals[-1].value
+            estimated_perf = self._active_configuration.tps
+
+            self._monitoring_data["performance"].append((datetime.now(), actual_perf, estimated_perf))
+
+    def _pull_power_data(self):
+        rapl_counters = RAPLCounter()
+
+        diff = self._rapl_counters - rapl_counters
+
+        actual_power = diff.domain(0).counter("package-0").watts + diff.domain(0).counter("dram").watts
+        estimated_power = self._active_configuration.power
+
+        self._monitoring_data["power"].append((diff.timestamp, actual_power, estimated_power))
+        self._rapl_counters = rapl_counters
+
+    def _update_monitoring_data(self):
+        self._pull_performance_data()
+        self._pull_power_data()
+
     # Our main loop
     def run(self):
         while not self._event.is_set():
@@ -731,7 +768,7 @@ class EUFThread(Thread):
                     break
 
             # Output the latest counter values
-            self._ectrl._pull_monitoring_data()
+            self._update_monitoring_data()
             self._refresh()
 
 
