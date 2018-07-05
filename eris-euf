@@ -472,8 +472,9 @@ class EUFThread(Thread):
                 return
 
             latest_value = self._monitoring_data["power"][-1]
-            self._power_plot_win.print("Current power: {:.2f} W".format(latest_value[1]), pos=(0,0), refresh=False)
-            self._power_plot_win.print("Estimated power: {:.2f} W".format(latest_value[2]), pos=(0,1), refresh=False)
+            self._power_plot_win.print("Power", pos=(0,0), refresh=False)
+            self._power_plot_win.print("Cur: {:.2f} W".format(latest_value[1]), pos=(0,1), refresh=False)
+            self._power_plot_win.print("Est: {:.2f} W".format(latest_value[2]), pos=(0,2), refresh=False)
         else:
             width, height = self._power_plot_size
             self._power_plot.resize(width-1, height-1)
@@ -495,8 +496,9 @@ class EUFThread(Thread):
                 return
 
             latest_value = self._monitoring_data["performance"][-1]
-            self._perf_plot_win.print("Current performance: {:d} T/s".format(int(latest_value[1])), pos=(0,0), refresh=False)
-            self._perf_plot_win.print("Estimated performance: {:d} T/s".format(int(latest_value[2])), pos=(0,1), refresh=False)
+            self._perf_plot_win.print("Performance", pos=(0,0), refresh=False)
+            self._perf_plot_win.print("Cur: {:d} T/s".format(int(latest_value[1])), pos=(0,1), refresh=False)
+            self._perf_plot_win.print("Est: {:d} T/s".format(int(latest_value[2])), pos=(0,2), refresh=False)
         else:
             width, height = self._perf_plot_size
             self._perf_plot.resize(width-1, height-1)
