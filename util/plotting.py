@@ -35,6 +35,12 @@ class Plot:
         self._send_command(command)
         return self
 
+    def unset(self, option):
+        command = "unset {}\n".format(option)
+
+        self._send_command(command)
+        return self
+
     def plot(self, *funcs):
         command = "plot "
         command += ", ".join([str(f) for f in funcs])
@@ -103,6 +109,12 @@ class AsciiPlot(Plot):
             raise ValueError("Can't set term. Use different Plot type")
 
         return super().set(option, *values)
+
+    def unset(self, option):
+        if option == "term":
+            raise ValueError("Can't unset term. Use different Plot type!")
+
+        return super().unset(option)
 
     def plot(self, *funcs):
         self._out.clear()
