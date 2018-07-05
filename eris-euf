@@ -283,17 +283,19 @@ class EUFThread(Thread):
         if self._curses is None:
             return
 
-        def new_plot(width, height, title):
-            p = AsciiPlot(width, height)
+        def data_plot(title):
+            p = AsciiPlot(10, 10)
             p.set("xrange", "[-{}:0]".format(self._history_length))
             p.set("border", "3")
+            p.set("xtics", "border", "out", "nomirror")
+            p.set("ytics", "border", "out", "nomirror")
             p.set("key", "center", "top")
             p.set("title", "'{}'".format(title))
 
             return p
 
-        self._power_plot = new_plot(10, 10, "Power")
-        self._perf_plot = new_plot(10, 10, "Performance")
+        self._power_plot = data_plot("Power")
+        self._perf_plot = data_plot("Performance")
 
     def _resize_windows(self, refresh=True):
         if self._curses is None:
