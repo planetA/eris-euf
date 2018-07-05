@@ -288,8 +288,9 @@ class EUFThread(Thread):
             p = AsciiPlot(10, 10)
             p.set("xrange", "[-{}:0]".format(self._history_length))
             p.set("border", "3")
-            p.set("xtics", "border", "out", "nomirror")
-            p.set("ytics", "border", "out", "nomirror")
+            p.set("xtics", "border", "out", "nomirror", "scale 1",
+                    "(" + ",".join(["'{:d} min' {}".format(int(i/60), -i) for i in range(0, self._history_length + 1, 60)]) + ")")
+            p.set("ytics", "border", "out", "nomirror", "scale 0.5")
             p.set("key", "center", "top")
             p.set("title", "'{}'".format(title))
 
