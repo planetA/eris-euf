@@ -276,6 +276,7 @@ class EUFThread(Thread):
         self._config_win = self._root_win.new_window(0,0,1,1)
         self._power_plot_win = self._root_win.new_window(0,0,1,1)
         self._perf_plot_win = self._root_win.new_window(0,0,1,1)
+        self._config_plot_win = self._root_win.new_window(0,0,1,1)
         self._log_win = self._root_win.new_window(0,0,1,1)
 
         self._resize_windows(refresh=False)
@@ -296,8 +297,17 @@ class EUFThread(Thread):
 
             return p
 
+        def config_plot():
+            p = AsciiPlot(10, 10)
+            p.set("xrange", "[0:100]").set("yrange", "[0:100]")
+            p.unset("border").unset("tics").unset("key")
+            p.set("title", "'Configurations'")
+
+            return p
+
         self._power_plot = data_plot("Power")
         self._perf_plot = data_plot("Performance")
+        self._config_plot = config_plot()
 
     def _resize_windows(self, refresh=True):
         if self._curses is None:
@@ -312,21 +322,23 @@ class EUFThread(Thread):
         # |-------------------------------------------------------------|
         # |  Current active configuration                               |
         # |-------------------------------------------------------------|
-        # |                             |                               |
-        # |         Plot                |           Plot                |
-        # |   Power vs est. Power       |   Performance vs. est. Perf   |
-        # |                             |                               |
-        # |                             |                               |
+        # |                     |                  |                    |
+        # |         Plot        |       Plot       |        Plot        |
+        # |    Configurations   |     Power vs.    |   Performance vs.  |
+        # |    + act. Config    |    est. Power    |     est. Perf      |
+        # |                     |                  |                    |
         # |-------------------------------------------------------------|
         # | Log                                                         |
         # |                                                             |
         # |                                                             |
         # |-------------------------------------------------------------|
         #
-        # If we don't have enough width, we omit the performance plot and
-        # if we don't have enough height, we omit the whole plot area and
-        # instead only show estimated vs. real values without history. If
-        # height is really small we omit the log area as well if necessary.
+        # If we don't have enough width we omit the config plot and if necessary
+        # also the performance plot. If width is really short, we only show the
+        # values of the achieved and estimated performance.
+        # If we don't have enough height, we omit the plots and instead also only
+        # show the achieved and estimated values. If height is really short, we
+        # omit the log area in favor of the performance and power values.
         # The minimum that we will show is the current configuration.
 
         self._show_stats = self._show_config = self._show_plots \
@@ -337,26 +349,49 @@ class EUFThread(Thread):
             self._stats_win.resize(width, 1).move(0, 0)
             self._config_win.resize(width, 1).move(0, 1)
 
-            self._power_plot_win.resize(width/2,height-20).move(0, 2)
-            self._perf_plot_win.resize(width/2,height-20).move(width/2, 2)
+            self._config_plot_win.resize(width/3,height-20).move(0, 2)
+            self._power_plot_win.resize(width/3,height-20).move(width/3, 2)
+            self._perf_plot_win.resize(width/3,height-20).move(2*width/3, 2)
+            self._config_plot_size = self._power_plot_size = \
+                    self._perf_plot_size = (width/3, height-20)
+
+            self._log_win.resize(width, 18).move(0, height-18)
+        elif height >= 40 and width < 60 and width > 40:
+            # Not enough width for the config plot so omit this one
+            self._stats_win.resize(width, 1).move(0, 0)
+            self._config_win.resize(width, 1).move(0, 1)
+
+            self._config_plot_win.resize(1, 1).move(0, 0)
+            self._config_plot_size = None
+
+            self._power_plot_win.resize(width/2, height-20).move(0, 2)
+            self._perf_plot_win.resize(width/2, height-20).move(width/2, 2)
             self._power_plot_size = self._perf_plot_size = (width/2, height-20)
 
             self._log_win.resize(width, 18).move(0, height-18)
-        elif height >= 40 and width < 60 and width > 30:
-            # Not enough width for the perf plot so display only the values
+        elif height >= 40 and width < 40 and width > 20:
+            # Not enough width for the config and performance plot, so omit them
+            # and instead only show the achieved and estimated performance values
             self._stats_win.resize(width, 1).move(0, 0)
             self._config_win.resize(width, 1).move(0, 1)
 
-            self._power_plot_win.resize(width-20, height-20).move(0, 2)
-            self._perf_plot_win.resize(20, height-20).move(width-20, 2)
-            self._power_plot_size = (width-20, height-20)
+            self._config_plot_win.resize(1, 1).move(0, 0)
+            self._config_plot_size = None
+
+            self._power_plot_win.resize(width-10, height-20).move(0, 2)
+            self._power_plot_size = (width-10, height-20)
+
+            self._perf_plot_win.resize(10, height-20).move(width-10, 2)
             self._perf_plot_size = None
 
             self._log_win.resize(width, 18).move(0, height-18)
-        elif height >= 40 and width <= 30:
+        elif height >= 40 and width <= 20:
             # Not enough width for any of the plots, just display the values
             self._stats_win.resize(width, 1).move(0, 0)
             self._config_win.resize(width, 1).move(0, 1)
+
+            self._config_plot_win.resize(1, 1).move(0, 0)
+            self._config_plot_size = None
 
             self._power_plot_win.resize(width, 5).move(0, 2)
             self._perf_plot_win.resize(width, 5).move(0, 7)
@@ -368,28 +403,39 @@ class EUFThread(Thread):
             self._stats_win.resize(width, 1).move(0, 0)
             self._config_win.resize(width, 1).move(0, 1)
 
+            self._config_plot_win.resize(1, 1).move(0, 0)
+            self._config_plot_size = None
+
             self._power_plot_win.resize(width, 5).move(0, 2)
             self._perf_plot_win.resize(width, 5).move(0, 7)
             self._power_plot_size = self._perf_plot_size = None
 
             self._log_win.resize(width, height-12).move(0, 12)
-        elif height < 20 and height >= 12:
+        elif height < 20 and height >= 8:
             # Even less height, don't show the log anymore in favor of the power and performance values
-            self._power_plot_win.resize(width, 5).move(0, 2)
-            self._perf_plot_win.resize(width, 5).move(0, 7)
+            self._stats_win.resize(width, 1).move(0, 0)
+            self._config_win.resize(width, 1).move(0, 1)
+
+            self._config_plot_win.resize(1, 1).move(0, 0)
+            self._config_plot_size = None
+
+            self._power_plot_win.resize(width, 3).move(0, 2)
+            self._perf_plot_win.resize(width, 3).move(0, 5)
             self._power_plot_size = self._perf_plot_size = None
 
             self._show_log = False
             self._log_win.resize(1, 1).move(0, 0)
-        elif height < 12 and height >= 2:
+        elif height < 8 and height >= 2:
             # Even less height, only show the statistics and the currently used configuration
             self._stats_win.resize(width, 1).move(0, 0)
             self._config_win.resize(width, 1).move(0, 1)
 
             self._show_plots = False
+            self._config_plot_win.resize(1, 1).move(0, 0)
             self._power_plot_win.resize(1, 1).move(0, 0)
             self._perf_plot_win.resize(1, 1).move(0, 0)
-            self._power_plot_size = self._perf_plot_size = None
+            self._config_plot_size = self._power_plot_size = \
+                    self._perf_plot_size = None
 
             self._show_log = False
             self._log_win.resize(1, 1).move(0, 0)
@@ -401,9 +447,11 @@ class EUFThread(Thread):
             self._stats_win.resize(1, 1).move(0, 0)
 
             self._show_plots = False
+            self._config_plot_win.resize(1, 1).move(0, 0)
             self._power_plot_win.resize(1, 1).move(0, 0)
             self._perf_plot_win.resize(1, 1).move(0, 0)
-            self._power_plot_size = self._perf_plot_size = None
+            self._config_plot_size = self._power_plot_size = \
+                    self._perf_plot_size = None
 
             self._show_log = False
             self._log_win.resize(1, 1).move(0, 0)
@@ -514,10 +562,54 @@ class EUFThread(Thread):
                                                      "'' using 1:3 title 'estimated' with lines lc rgb 'red'"),
                     pos=(0,0), refresh=False)
 
+    def _prepare_config_data(self, all_configs, pareto_configs, active_config):
+        max_tps = max([c.tps for c in all_configs])
+        min_tps = min([c.tps for c in all_configs])
+        max_power = max([c.power for c in all_configs])
+        min_power = min([c.power for c in all_configs])
+
+        if max_tps == min_tps:
+            min_tps = 0
+        if max_power == min_power:
+            min_power = 0
+
+        all_cfgs = [[(c.tps - min_tps) / (max_tps - min_tps) * 100,
+                     (c.power - min_power) / (max_power - min_power) * 100] for c in all_configs]
+        pareto_cfgs = [[(c.tps - min_tps) / (max_tps - min_tps) * 100,
+                        (c.power - min_power) / (max_power - min_power) * 100] for c in pareto_configs]
+        active_cfg = [[(active_config.tps - min_tps) / (max_tps - min_tps) * 100,
+                       (active_config.power - min_power) / (max_power - min_power) * 100]]
+
+        return all_cfgs, pareto_cfgs, active_cfg
+
+    def _refresh_config_plot(self):
+        if self._config_plot_size is None:
+            return
+
+        if self._active_configuration is None:
+            return
+
+        self._config_plot_win.clear(refresh=False)
+        width, height = self._config_plot_size
+        self._config_plot.resize(width-1, height-1)
+
+        all_cfgs, pareto, active = self._prepare_config_data(
+                self._all_configurations,
+                self._configurations,
+                self._active_configuration)
+
+        self._config_plot_win.safe_print(
+                self._config_plot.plot_data({"all" : all_cfgs, "pareto" : pareto, "active" : active},
+                                            "'$all' with points pt '*' tc rgb 'grey'",
+                                            "'$pareto' with points pt '*' tc rgb 'green'",
+                                            "'$active' with points pt 'O' tc rgb 'red'"),
+                pos=(0,0), refresh=False)
+
     def _refresh_plots(self):
         if not self._show_plots:
             return
 
+        self._refresh_config_plot()
         self._refresh_power_plot()
         self._refresh_perf_plot()
 
@@ -544,6 +636,7 @@ class EUFThread(Thread):
         if self._show_stats: self._stats_win.refresh()
         if self._show_config: self._config_win.refresh()
         if self._show_plots:
+            self._config_plot_win.refresh()
             self._perf_plot_win.refresh()
             self._power_plot_win.refresh()
         if self._show_log: self._log_win.refresh()
