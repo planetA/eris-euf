@@ -119,7 +119,7 @@ class AsciiPlot(Plot):
 
     def set(self, option, *values):
         if option == "term":
-            raise ValueError("Can't set term. Use different Plot type")
+            raise ValueError("Can't set term. Use different Plot type!")
 
         return super().set(option, *values)
 
