@@ -227,6 +227,7 @@ class EUFThread(Thread):
         self._update = True
         self._state = None
 
+        self._all_configurations = None
         self._configurations = None
         self._active_configuration = None
 
@@ -668,7 +669,7 @@ class EUFThread(Thread):
             self._log("Generated {} configurations, of which {} are pareto optimal".format(len(all_configurations), len(pareto_configurations)))
 
             # Save the configurations in our internal buffer
-            self._benchmark_configurations[b.name] = pareto_configurations
+            self._benchmark_configurations[b.name] = {"all": all_configurations, "pareto": pareto_configurations}
 
     def _update_configurations(self):
         self._configurations = []
@@ -696,6 +697,8 @@ class EUFThread(Thread):
                                                              ht=True,
                                                              cpus=2*cores,
                                                              ipc=1, power=1, tps=1, epr=1))
+                self._all_configurations = self._configurations
+
                 return
 
             running, b = self._bench_running()
@@ -715,10 +718,13 @@ class EUFThread(Thread):
                 if self._active_configuration is not None and \
                         self._active_configuration != self._configurations[0]:
                     self._configurations.append(self._active_configuration)
+
+                self._all_configurations = self._configurations
             else:
                 self._log("{} is currently running - using pregenerated configuration".format(b.name))
 
-                self._configurations = self._benchmark_configurations[b.name]
+                self._configurations = self._benchmark_configurations[b.name]["pareto"]
+                self._all_configurations = self._benchmark_configurations[b.name]["all"]
 
     def _find_best_configuration(self, target_tps=None, last_best=None):
         if len(self._configurations) == 1:
