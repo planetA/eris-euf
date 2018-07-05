@@ -49,12 +49,25 @@ class Plot:
         self._send_command(command)
         return self
 
-    def plot_data(self, data, *funcs, name="data"):
-        command = "${} << EOD\n".format(name)
-        command += "\n".join([" ".join([str(v) for v in row]) for row in data])
-        command += "\nEOD\n"
+    def plot_data(self, data, *funcs):
+        if isinstance(data, dict):
+            for n, values in data.items():
+                if not isinstance(values, list) or not isinstance(values[0], list):
+                    raise ValueError("'{}' item must be a list of lists.".format(n))
 
-        self._send_command(command)
+                command = "${} << EOD\n".format(n)
+                command += "\n".join([" ".join([str(v) for v in row]) for row in values])
+                command += "\nEOD\n"
+
+                self._send_command(command)
+        elif isinstance(data, list) and isinstance(data[0], list):
+            command = "$data << EOD\n"
+            command += "\n".join([" ".join([str(v) for v in row]) for row in data])
+            command += "\nEOD\n"
+
+            self._send_command(command)
+        else:
+            raise ValueError("'data' must be either a dict of list of lists or a list of lists.")
 
         command = "plot "
         command += ", ".join([str(f) for f in funcs])
@@ -123,10 +136,10 @@ class AsciiPlot(Plot):
 
         return self._out.read(timeout=.1)
 
-    def plot_data(self, data, *funcs, name="data"):
+    def plot_data(self, data, *funcs):
         self._out.clear()
 
-        super().plot_data(data, *funcs, name=name)
+        super().plot_data(data, *funcs)
 
         return self._out.read(timeout=.1)
 
