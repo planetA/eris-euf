@@ -13,8 +13,6 @@ import logging
 from datetime import datetime
 
 from util import pretty_print
-from util.curses import Curses
-from util.plotting import AsciiPlot
 from util.rapl import RAPLCounter
 
 
@@ -166,7 +164,7 @@ class EUFThread(Thread):
 
             return self.freq == other.freq and self.cores == other.cores and self.ht == other.ht
 
-    def __init__(self, ectrl, curses, event):
+    def __init__(self, ectrl, event):
         super().__init__()
 
         # Various cosmetic settings
@@ -178,10 +176,6 @@ class EUFThread(Thread):
         self.eufon = True
 
         self._loglines = []
-
-        self._curses = curses
-        self._setup_curses()
-        self._setup_plots()
 
         self._event = event
 
@@ -227,7 +221,6 @@ class EUFThread(Thread):
         self._update = True
         self._state = None
 
-        self._all_configurations = None
         self._configurations = None
         self._active_configuration = None
 
@@ -261,392 +254,10 @@ class EUFThread(Thread):
         with self._lock:
             return self.eufon
 
-    # Output related functions
-    def _setup_curses(self):
-        if self._curses is None:
-            return
-
-        self._root_win = self._curses.root_window()
-
-        self._show_stats = self._show_config = self._show_plots \
-                = self._show_log = True
-
-        # Create the windows and resize them to an appropriate size
-        self._stats_win = self._root_win.new_window(0,0,1,1)
-        self._config_win = self._root_win.new_window(0,0,1,1)
-        self._power_plot_win = self._root_win.new_window(0,0,1,1)
-        self._perf_plot_win = self._root_win.new_window(0,0,1,1)
-        self._config_plot_win = self._root_win.new_window(0,0,1,1)
-        self._log_win = self._root_win.new_window(0,0,1,1)
-
-        self._resize_windows(refresh=False)
-
-    def _setup_plots(self):
-        if self._curses is None:
-            return
-
-        def data_plot(title):
-            p = AsciiPlot(10, 10)
-            p.set("xrange", "[-{}:0]".format(self._history_length))
-            p.set("border", "3")
-            p.set("xtics", "border", "out", "nomirror", "scale 1",
-                    "(" + ",".join(["'{:d} min' {}".format(int(i/60), -i) for i in range(0, self._history_length + 1, 60)]) + ")")
-            p.set("ytics", "border", "out", "nomirror", "scale 0.5")
-            p.set("key", "center", "top")
-            p.set("title", "'{}'".format(title))
-
-            return p
-
-        def config_plot():
-            p = AsciiPlot(10, 10)
-            p.set("xrange", "[0:100]").set("yrange", "[0:100]")
-            p.unset("border").unset("tics").unset("key")
-            p.set("title", "'Configurations'")
-
-            return p
-
-        self._power_plot = data_plot("Power")
-        self._perf_plot = data_plot("Performance")
-        self._config_plot = config_plot()
-
-    def _resize_windows(self, refresh=True):
-        if self._curses is None:
-            return
-
-        width, height = self._root_win.dimension
-
-        # We want to have the following layout if there is enough space:
-        #
-        # |-------------------------------------------------------------|
-        # |  Current statistics                                         |
-        # |-------------------------------------------------------------|
-        # |  Current active configuration                               |
-        # |-------------------------------------------------------------|
-        # |                     |                  |                    |
-        # |         Plot        |       Plot       |        Plot        |
-        # |    Configurations   |     Power vs.    |   Performance vs.  |
-        # |    + act. Config    |    est. Power    |     est. Perf      |
-        # |                     |                  |                    |
-        # |-------------------------------------------------------------|
-        # | Log                                                         |
-        # |                                                             |
-        # |                                                             |
-        # |-------------------------------------------------------------|
-        #
-        # If we don't have enough width we omit the config plot and if necessary
-        # also the performance plot. If width is really short, we only show the
-        # values of the achieved and estimated performance.
-        # If we don't have enough height, we omit the plots and instead also only
-        # show the achieved and estimated values. If height is really short, we
-        # omit the log area in favor of the performance and power values.
-        # The minimum that we will show is the current configuration.
-
-        self._show_stats = self._show_config = self._show_plots \
-                = self._show_log = True
-
-        if height >= 40 and width >= 60:
-            # we have enough space for everything
-            self._stats_win.resize(width, 1).move(0, 0)
-            self._config_win.resize(width, 1).move(0, 1)
-
-            self._config_plot_win.resize(width/3,height-20).move(0, 2)
-            self._power_plot_win.resize(width/3,height-20).move(width/3, 2)
-            self._perf_plot_win.resize(width/3,height-20).move(2*width/3, 2)
-            self._config_plot_size = self._power_plot_size = \
-                    self._perf_plot_size = (width/3, height-20)
-
-            self._log_win.resize(width, 18).move(0, height-18)
-        elif height >= 40 and width < 60 and width > 40:
-            # Not enough width for the config plot so omit this one
-            self._stats_win.resize(width, 1).move(0, 0)
-            self._config_win.resize(width, 1).move(0, 1)
-
-            self._config_plot_win.resize(1, 1).move(0, 0)
-            self._config_plot_size = None
-
-            self._power_plot_win.resize(width/2, height-20).move(0, 2)
-            self._perf_plot_win.resize(width/2, height-20).move(width/2, 2)
-            self._power_plot_size = self._perf_plot_size = (width/2, height-20)
-
-            self._log_win.resize(width, 18).move(0, height-18)
-        elif height >= 40 and width < 40 and width > 20:
-            # Not enough width for the config and performance plot, so omit them
-            # and instead only show the achieved and estimated performance values
-            self._stats_win.resize(width, 1).move(0, 0)
-            self._config_win.resize(width, 1).move(0, 1)
-
-            self._config_plot_win.resize(1, 1).move(0, 0)
-            self._config_plot_size = None
-
-            self._power_plot_win.resize(width-10, height-20).move(0, 2)
-            self._power_plot_size = (width-10, height-20)
-
-            self._perf_plot_win.resize(10, height-20).move(width-10, 2)
-            self._perf_plot_size = None
-
-            self._log_win.resize(width, 18).move(0, height-18)
-        elif height >= 40 and width <= 20:
-            # Not enough width for any of the plots, just display the values
-            self._stats_win.resize(width, 1).move(0, 0)
-            self._config_win.resize(width, 1).move(0, 1)
-
-            self._config_plot_win.resize(1, 1).move(0, 0)
-            self._config_plot_size = None
-
-            self._power_plot_win.resize(width, 5).move(0, 2)
-            self._perf_plot_win.resize(width, 5).move(0, 7)
-            self._power_plot_size = self._perf_plot_size = None
-
-            self._log_win.resize(width, height-12).move(0, 12)
-        elif height < 40 and height >= 20:
-            # Not enough height to show the plots, just show the values
-            self._stats_win.resize(width, 1).move(0, 0)
-            self._config_win.resize(width, 1).move(0, 1)
-
-            self._config_plot_win.resize(1, 1).move(0, 0)
-            self._config_plot_size = None
-
-            self._power_plot_win.resize(width, 5).move(0, 2)
-            self._perf_plot_win.resize(width, 5).move(0, 7)
-            self._power_plot_size = self._perf_plot_size = None
-
-            self._log_win.resize(width, height-12).move(0, 12)
-        elif height < 20 and height >= 8:
-            # Even less height, don't show the log anymore in favor of the power and performance values
-            self._stats_win.resize(width, 1).move(0, 0)
-            self._config_win.resize(width, 1).move(0, 1)
-
-            self._config_plot_win.resize(1, 1).move(0, 0)
-            self._config_plot_size = None
-
-            self._power_plot_win.resize(width, 3).move(0, 2)
-            self._perf_plot_win.resize(width, 3).move(0, 5)
-            self._power_plot_size = self._perf_plot_size = None
-
-            self._show_log = False
-            self._log_win.resize(1, 1).move(0, 0)
-        elif height < 8 and height >= 2:
-            # Even less height, only show the statistics and the currently used configuration
-            self._stats_win.resize(width, 1).move(0, 0)
-            self._config_win.resize(width, 1).move(0, 1)
-
-            self._show_plots = False
-            self._config_plot_win.resize(1, 1).move(0, 0)
-            self._power_plot_win.resize(1, 1).move(0, 0)
-            self._perf_plot_win.resize(1, 1).move(0, 0)
-            self._config_plot_size = self._power_plot_size = \
-                    self._perf_plot_size = None
-
-            self._show_log = False
-            self._log_win.resize(1, 1).move(0, 0)
-        elif height == 1:
-            # We only have one line left, hence only show the currently used configuration
-            self._config_win.resize(width, 1).move(0, 0)
-
-            self._show_stats = False
-            self._stats_win.resize(1, 1).move(0, 0)
-
-            self._show_plots = False
-            self._config_plot_win.resize(1, 1).move(0, 0)
-            self._power_plot_win.resize(1, 1).move(0, 0)
-            self._perf_plot_win.resize(1, 1).move(0, 0)
-            self._config_plot_size = self._power_plot_size = \
-                    self._perf_plot_size = None
-
-            self._show_log = False
-            self._log_win.resize(1, 1).move(0, 0)
-
-        if refresh:
-            self._refresh()
-
-    def _refresh_stats(self):
-        if not self._show_stats:
-            return
-
-        # Output the counters
-        ctr_values = []
-        for name, ctr in self._counters.items():
-            vals = ctr.values(False)
-            if len(vals) > 0:
-                ctr_values.append((name, vals[-1].value))
-
-        self._stats_win.clear(refresh=False)
-        self._stats_win.print(" ".join(["{}: {}".format(n, v) for n, v in ctr_values]), pos=(0,0), refresh=False)
-
-    def _refresh_config(self):
-        if not self._show_config:
-            return
-
-        self._config_win.clear(refresh=False)
-
-        config = self._active_configuration
-        if config is None:
-            self._config_win.print("Active configuration: None", pos=(0,0), refresh=False)
-        else:
-            workers = []
-            for i in range(config.cores):
-                workers.append(i)
-            if config.ht:
-                for i in range(config.cores):
-                    workers.append(i + max(Hardware.config['cores']))
-
-            frequency = config.freq
-            power = config.power
-            tps = config.tps
-
-            self._config_win.print("Active configuration: {} @{}MHz [{:.2f} W, {:d} T/s]".format(pretty_print(workers), frequency/1000, power, int(tps)),
-                    pos=(0,0), refresh=False)
-
-    def _prepare_plot_data(self, mon_data, rel_ts=None):
-        if rel_ts is None:
-            rel_ts = datetime.now()
-
-        plot_data = []
-        for ts, act, est in reversed(mon_data):
-            t_diff = (ts - rel_ts).total_seconds()
-            if t_diff > 0:
-                continue
-
-            if t_diff < -self._history_length:
-                break
-
-            plot_data.append([t_diff, act, est])
-
-        return plot_data
-
-    def _refresh_power_plot(self):
-        self._power_plot_win.clear(refresh=False)
-
-        if self._power_plot_size is None:
-            if len(self._monitoring_data["power"]) == 0:
-                return
-
-            latest_value = self._monitoring_data["power"][-1]
-            self._power_plot_win.print("Power", pos=(0,0), refresh=False)
-            self._power_plot_win.print("Cur: {:.2f} W".format(latest_value[1]), pos=(0,1), refresh=False)
-            self._power_plot_win.print("Est: {:.2f} W".format(latest_value[2]), pos=(0,2), refresh=False)
-        else:
-            width, height = self._power_plot_size
-            self._power_plot.resize(width-1, height-1)
-
-            data = self._prepare_plot_data(self._monitoring_data["power"])
-            if len(data) == 0:
-                return
-
-            self._power_plot_win.safe_print(
-                    self._power_plot.plot_data(data, "'$data' using 1:2 title 'real' with lines lc rgb 'green'",
-                                                     "'' using 1:3 title 'estimated' with lines lc rgb 'red'"),
-                    pos=(0,0), refresh=False)
-
-    def _refresh_perf_plot(self):
-        self._perf_plot_win.clear(refresh=False)
-
-        if self._perf_plot_size is None:
-            if len(self._monitoring_data["performance"]) == 0:
-                return
-
-            latest_value = self._monitoring_data["performance"][-1]
-            self._perf_plot_win.print("Performance", pos=(0,0), refresh=False)
-            self._perf_plot_win.print("Cur: {:d} T/s".format(int(latest_value[1])), pos=(0,1), refresh=False)
-            self._perf_plot_win.print("Est: {:d} T/s".format(int(latest_value[2])), pos=(0,2), refresh=False)
-        else:
-            width, height = self._perf_plot_size
-            self._perf_plot.resize(width-1, height-1)
-
-            data = self._prepare_plot_data(self._monitoring_data["performance"])
-            if len(data) == 0:
-                return
-
-            self._perf_plot_win.safe_print(
-                    self._perf_plot.plot_data(data, "'$data' using 1:2 title 'real' with lines lc rgb 'green'",
-                                                     "'' using 1:3 title 'estimated' with lines lc rgb 'red'"),
-                    pos=(0,0), refresh=False)
-
-    def _prepare_config_data(self, all_configs, pareto_configs, active_config):
-        max_tps = max([c.tps for c in all_configs])
-        min_tps = min([c.tps for c in all_configs])
-        max_power = max([c.power for c in all_configs])
-        min_power = min([c.power for c in all_configs])
-
-        if max_tps == min_tps:
-            min_tps = 0
-        if max_power == min_power:
-            min_power = 0
-
-        all_cfgs = [[(c.tps - min_tps) / (max_tps - min_tps) * 100,
-                     (c.power - min_power) / (max_power - min_power) * 100] for c in all_configs]
-        pareto_cfgs = [[(c.tps - min_tps) / (max_tps - min_tps) * 100,
-                        (c.power - min_power) / (max_power - min_power) * 100] for c in pareto_configs]
-        active_cfg = [[(active_config.tps - min_tps) / (max_tps - min_tps) * 100,
-                       (active_config.power - min_power) / (max_power - min_power) * 100]]
-
-        return all_cfgs, pareto_cfgs, active_cfg
-
-    def _refresh_config_plot(self):
-        if self._config_plot_size is None:
-            return
-
-        if self._active_configuration is None:
-            return
-
-        self._config_plot_win.clear(refresh=False)
-        width, height = self._config_plot_size
-        self._config_plot.resize(width-1, height-1)
-
-        all_cfgs, pareto, active = self._prepare_config_data(
-                self._all_configurations,
-                self._configurations,
-                self._active_configuration)
-
-        self._config_plot_win.safe_print(
-                self._config_plot.plot_data({"all" : all_cfgs, "pareto" : pareto, "active" : active},
-                                            "'$all' with points pt '*' tc rgb 'grey'",
-                                            "'$pareto' with points pt '*' tc rgb 'green'",
-                                            "'$active' with points pt 'O' tc rgb 'red'"),
-                pos=(0,0), refresh=False)
-
-    def _refresh_plots(self):
-        if not self._show_plots:
-            return
-
-        self._refresh_config_plot()
-        self._refresh_power_plot()
-        self._refresh_perf_plot()
-
-    def _refresh_log(self):
-        if not self._show_log:
-            return
-
-        maxlines = self._log_win.dimension[1]
-        self._log_win.clear(refresh=False)
-        self._log_win.print("\n".join(self._loglines[-maxlines:]), pos=(0,0), refresh=False)
-
-    def _refresh(self):
-        if self._curses is None:
-            return
-
-        # First update the window contents
-        self._refresh_stats()
-        self._refresh_config()
-        self._refresh_plots()
-        self._refresh_log()
-
-        # Now make a coordinated refresh of everything
-        self._root_win.refresh()
-        if self._show_stats: self._stats_win.refresh()
-        if self._show_config: self._config_win.refresh()
-        if self._show_plots:
-            self._config_plot_win.refresh()
-            self._perf_plot_win.refresh()
-            self._power_plot_win.refresh()
-        if self._show_log: self._log_win.refresh()
-
     def _log(self, string):
         self._loglines.append(string)
 
-        if self._curses is None:
-            print(string)
-            return
+        print(string)
 
     # EUF related functions
     def _benchmark_states(self, benchmark_session):
@@ -778,47 +389,46 @@ class EUFThread(Thread):
                                                          ht=True,
                                                          cpus=2*cores,
                                                          ipc=1, power=1, tps=1, epr=1))
-        else:
-            loading, b = self._bench_loading()
-            if loading:
-                self._log("{} is currently loading - using max performance configuration".format(b.name))
+            return
 
-                freq = max(Hardware.config["freq"])
-                cores = max(Hardware.config["cores"])
+        loading, b = self._bench_loading()
+        if loading:
+            self._log("{} is currently loading - using max performance configuration".format(b.name))
 
-                self._configurations.append(EUFThread.Config(freq=freq,
-                                                             cores=cores,
-                                                             ht=True,
-                                                             cpus=2*cores,
-                                                             ipc=1, power=1, tps=1, epr=1))
-                self._all_configurations = self._configurations
+            freq = max(Hardware.config["freq"])
+            cores = max(Hardware.config["cores"])
 
-                return
+            self._configurations.append(EUFThread.Config(freq=freq,
+                                                         cores=cores,
+                                                         ht=True,
+                                                         cpus=2*cores,
+                                                         ipc=1, power=1, tps=1, epr=1))
 
-            running, b = self._bench_running()
-            if not running:
-                self._log("No benchmark running")
-                # Add a minimal configuration that we use when nothing is running and no
-                # tasks are outstanding.
-                self._configurations.append(EUFThread.Config(freq=min(Hardware.config["freq"]),
-                                                             cores=min(Hardware.config["cores"]),
-                                                             ht=False,
-                                                             cpus=min(Hardware.config["cores"]),
-                                                             ipc=1, power=1, tps=1, epr=1))
+            return
 
-                # Also add the last active configuration if there is one and if its not
-                # already the idle config. We can use this configuration if there are
-                # still requests outstanding.
-                if self._active_configuration is not None and \
-                        self._active_configuration != self._configurations[0]:
-                    self._configurations.append(self._active_configuration)
+        running, b = self._bench_running()
+        if not running:
+            self._log("No benchmark running")
+            # Add a minimal configuration that we use when nothing is running and no
+            # tasks are outstanding.
+            self._configurations.append(EUFThread.Config(freq=min(Hardware.config["freq"]),
+                                                         cores=min(Hardware.config["cores"]),
+                                                         ht=False,
+                                                         cpus=min(Hardware.config["cores"]),
+                                                         ipc=1, power=1, tps=1, epr=1))
 
-                self._all_configurations = self._configurations
-            else:
-                self._log("{} is currently running - using pregenerated configuration".format(b.name))
+            # Also add the last active configuration if there is one and if its not
+            # already the idle config. We can use this configuration if there are
+            # still requests outstanding.
+            if self._active_configuration is not None and \
+                    self._active_configuration != self._configurations[0]:
+                self._configurations.append(self._active_configuration)
 
-                self._configurations = self._benchmark_configurations[b.name]["pareto"]
-                self._all_configurations = self._benchmark_configurations[b.name]["all"]
+            return
+
+        self._log("{} is currently running - using pregenerated configuration".format(b.name))
+
+        self._configurations = self._benchmark_configurations[b.name]["pareto"]
 
     def _find_best_configuration(self, target_tps=None, last_best=None):
         if len(self._configurations) == 1:
@@ -919,24 +529,14 @@ class EUFThread(Thread):
                     self._apply_configuration(best)
 
             # Wait for another update
-            if not self._curses:
-                time.sleep(1)
-            else:
-                key = self._root_win.get_user_input(timeout=1000)
-                if key == Curses.Keys.RESIZE:
-                    self._resize_windows()
-                elif key == "q" or key == Curses.Keys.ESC:
-                    break
-                elif key == "c":
-                    self._monitoring_data = { "power" : [], "performance" : [] }
+            time.sleep(1)
 
             # Output the latest counter values
             self._update_monitoring_data()
-            self._refresh()
 
 
 # Main
-def run(ectrl, curs):
+def run(ectrl):
     # Prepare ERIS
     ectrl.energy_management(False, False)       # Turn of ERIS' energy control loop (we are doing this now!)
     for w in ectrl.workers():                   # Turn on all ERIS workers
@@ -945,7 +545,7 @@ def run(ectrl, curs):
     kill_event = Event()
 
     # Start the EUF and flask threads
-    euf_thread = EUFThread(ectrl, curs, kill_event)
+    euf_thread = EUFThread(ectrl, kill_event)
     flask_thread = FlaskThread(app, euf_thread)
 
     euf_thread.start()
@@ -978,15 +578,14 @@ def main():
 
     parsed_args = arguments.parse_args()
 
+    if not parsed_args.nocurses:
+        print("Curses are not supported")
+        sys.exit(1)
+
     # Connect to ERIS
     try:
-        if parsed_args.nocurses:
-            with ErisCtrl(parsed_args.url, parsed_args.port, parsed_args.user, parsed_args.passwd) as ectrl:
-                run(ectrl, None)
-        else:
-            with ErisCtrl(parsed_args.url, parsed_args.port, parsed_args.user, parsed_args.passwd) as ectrl, \
-                 Curses() as curs:
-                run(ectrl, curs)
+        with ErisCtrl(parsed_args.url, parsed_args.port, parsed_args.user, parsed_args.passwd) as ectrl:
+            run(ectrl)
     except ErisCtrlError:
         print("Failed to connect to ERIS!")
         sys.exit(1)
