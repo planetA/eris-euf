@@ -321,10 +321,7 @@ class EUFThread(Thread):
 
         started = started_ctr[-1].value
         active = active_ctr[-1].value
-        if started > active:
-            needed_tps = started
-        else:
-            needed_tps = active
+        needed_tps = max(started, active)
         available_tps = self._active_configuration.tps
 
         if abs(needed_tps - available_tps) > (needed_tps * 0.05):
